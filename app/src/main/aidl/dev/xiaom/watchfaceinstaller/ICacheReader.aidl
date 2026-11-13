@@ -5,5 +5,5 @@ import android.os.ParcelFileDescriptor;
 interface ICacheReader {
     String scan();
     ParcelFileDescriptor openReadOnly(String path);
-    void destroy() = 16777114;
+    void destroy();
 }
