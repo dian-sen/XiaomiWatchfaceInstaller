@@ -6,7 +6,26 @@ plugins {
 
 android { namespace = "dev.xiaom.watchfaceinstaller"; compileSdk = 35
     defaultConfig { applicationId = "dev.xiaom.watchfaceinstaller"; minSdk = 26; targetSdk = 35; versionCode = 1; versionName = "0.1.0" }
-    buildTypes { release { isMinifyEnabled = false; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") } }
+    signingConfigs {
+        create("distribution") {
+            val keystorePath = System.getenv("SIGNING_STORE_FILE")
+            if (!keystorePath.isNullOrBlank()) {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("SIGNING_STORE_PASSWORD")
+                keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+                keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            if (!System.getenv("SIGNING_STORE_FILE").isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("distribution")
+            }
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
