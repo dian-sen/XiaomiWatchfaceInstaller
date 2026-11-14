@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <application android:theme="@style/Theme.WatchfaceInstaller" android:label="Xiaomi Watchface Installer" android:allowBackup="false" android:supportsRtl="true">
+        <activity android:name=".AuthKeyActivity" android:exported="false" />
         <activity android:name=".BandInstallActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>

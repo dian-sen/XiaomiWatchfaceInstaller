@@ -189,7 +189,8 @@ class MainActivity : ComponentActivity() {
                             pendingPairBin = it.file; pendingPairPreview = selectedPreview; pendingPairName = exportBase(it)
                             pairExporter.launch(null)
                         }
-                    }, previewNotice, selectedIdEdited, ::rereadCurrentId, ::openBandEditor, { install(false) }, { install(true) })
+                    }, previewNotice, selectedIdEdited, ::rereadCurrentId, ::openBandEditor, { install(false) }, { install(true) },
+                    { startActivity(Intent(this, AuthKeyActivity::class.java)) })
             }
         }
         Shizuku.addRequestPermissionResultListener(permission)
@@ -440,7 +441,7 @@ private fun WatchfaceScreen(
     status: String, connected: Boolean, busy: Boolean, error: String?, notice: String?,
     files: List<WatchfaceItem>, selected: WatchfaceInfo?, useRoot: Boolean, mode: (Boolean) -> Unit,
     request: () -> Unit, scan: () -> Unit,
-    select: (WatchfaceItem) -> Unit, onImport: () -> Unit, export: () -> Unit, exportPair: () -> Unit, previewNotice: String, idEdited: Boolean, rereadId: () -> Unit, internalInstall: () -> Unit, install: () -> Unit, share: () -> Unit
+    select: (WatchfaceItem) -> Unit, onImport: () -> Unit, export: () -> Unit, exportPair: () -> Unit, previewNotice: String, idEdited: Boolean, rereadId: () -> Unit, internalInstall: () -> Unit, install: () -> Unit, share: () -> Unit, authKey: () -> Unit
 ) {
     var filter by rememberSaveable { mutableStateOf(BinFilter.CANDIDATE) }
     var keyword by rememberSaveable { mutableStateOf("") }
@@ -451,6 +452,7 @@ private fun WatchfaceScreen(
         item {
             Text("Xiaomi Watchface Installer", style = MaterialTheme.typography.headlineSmall)
             Text("小米手环 9 Pro · 只读缓存提取 / 外部工具交接")
+            OutlinedButton(onClick = authKey, enabled = !busy) { Text("设备认证密钥（Root）") }
             selected?.let { info ->
                 Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer)) {

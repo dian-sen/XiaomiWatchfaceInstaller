@@ -1,0 +1,112 @@
+package dev.xiaom.watchfaceinstaller
+
+import android.os.Bundle
+import android.view.WindowManager
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+
+/** Secrets never leave this Activity, saved state, clipboard, Intent and preferences are unused. */
+class AuthKeyActivity : ComponentActivity() {
+    private val lock = Any()
+    private val executor = Executors.newSingleThreadExecutor()
+    private var operation: Future<*>? = null
+    private var epoch = 0
+    private var foreground = false
+    private var records: List<AuthKeyRecord> = emptyList()
+    private var choices by mutableStateOf(emptyList<String>())
+    private var selected by mutableStateOf<Int?>(null)
+    private var busy by mutableStateOf(false)
+    private var status by mutableStateOf("尚未读取；仅支持 miwear.watch.n67cn")
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        setContent {
+            MaterialTheme {
+                LazyColumn(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    item {
+                        Text("设备认证密钥（Root）", style = MaterialTheme.typography.headlineSmall)
+                        Text("点击后通过本应用 su 只读取得小米运动健康数据库的临时私有快照。只提取目标型号的 encrypt_key，不读取其他认证字段。不会修改 Root 策略或连接蓝牙。")
+                        Text("密钥仅保留在本页内存，以掩码显示；不复制、不保存、不传递给其他页面。离开页面即清空，返回需要重新读取。")
+                        Button(onClick = ::readKey, enabled = !busy) { Text(if (busy) "正在安全读取…" else "明确授权并读取 AuthKey") }
+                        Text(status)
+                    }
+                    items(choices.size) { index ->
+                        OutlinedButton(onClick = { choose(index) }, enabled = !busy) {
+                            Text("${if (selected == index) "已选择 · " else "选择 · "}${choices[index]}")
+                        }
+                    }
+                    if (selected != null) item { Text("AuthKey：••••••••••••••••••••••••••••••••（32 位十六进制）") }
+                    item { OutlinedButton(onClick = { finish() }) { Text("清空并返回") } }
+                }
+            }
+        }
+    }
+
+    override fun onStart() { super.onStart(); synchronized(lock) { foreground = true } }
+
+    private fun clearLocked() {
+        records.forEach { it.close() }; records = emptyList()
+    }
+
+    private fun readKey() {
+        val request = synchronized(lock) {
+            if (!foreground || busy) return
+            clearLocked(); ++epoch
+        }
+        choices = emptyList(); selected = null; busy = true
+        status = "等待 Root 授权及快照校验；不会读取后自动连接"
+        operation = executor.submit {
+            try {
+                val found = RootAuthKeySource(applicationContext).read()
+                synchronized(lock) {
+                    if (!foreground || epoch != request) { found.forEach { it.close() }; return@submit }
+                    records = found
+                }
+                runOnUiThread {
+                    synchronized(lock) {
+                        if (!foreground || epoch != request) return@runOnUiThread
+                        choices = records.mapIndexed { index, record -> "记录 ${index + 1} · ${record.model} · ${record.mac}" }
+                        busy = false
+                        // Even a single record requires an explicit selection; never guess among duplicates.
+                        status = "已安全读取 ${records.size} 条候选；请选择设备记录。未连接、未安装。"
+                    }
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    synchronized(lock) {
+                        if (!foreground || epoch != request) return@runOnUiThread
+                        clearLocked(); busy = false
+                        status = "安全读取失败：Root、快照或设备记录未通过校验。未使用密钥；如持续失败请清除本应用缓存。"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun choose(index: Int) {
+        synchronized(lock) {
+            if (!foreground || index !in records.indices) return
+            selected = index
+            status = "已读取可用于后续认证，但未连接未安装。当前版本不会将密钥传给 BLE 页面。"
+        }
+    }
+
+    override fun onStop() {
+        synchronized(lock) { foreground = false; ++epoch; clearLocked() }
+        operation?.cancel(true); operation = null
+        choices = emptyList(); selected = null; busy = false
+        status = "已清空内存中的密钥；需要重新点击读取"
+        super.onStop()
+    }
+
+    override fun onDestroy() { executor.shutdownNow(); super.onDestroy() }
+}
