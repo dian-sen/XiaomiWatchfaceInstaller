@@ -22,8 +22,10 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
@@ -31,6 +33,10 @@ import java.io.File
 import java.io.IOException
 
 class MainActivity : ComponentActivity() {
+    private val rootSource = RootCacheSource()
+    private var useRoot by mutableStateOf(true)
+    private var rootAuthorized by mutableStateOf(false)
+    private var rootStatus by mutableStateOf("Root 优先：请在 Root 管理器授权本应用（无需 Shizuku）")
     private var reader: ICacheReader? = null
     private var connection: ServiceConnection? = null
     private var serviceBinder: IBinder? = null
@@ -52,7 +58,7 @@ class MainActivity : ComponentActivity() {
     }
     private val permission = Shizuku.OnRequestPermissionResultListener { code, result ->
         runOnUiThread {
-            if (!closed && code == 100) {
+            if (!closed && !useRoot && code == 100) {
                 if (result == PackageManager.PERMISSION_GRANTED) bindReader()
                 else { status = "Shizuku 授权被拒绝"; error = status }
             }
@@ -63,13 +69,13 @@ class MainActivity : ComponentActivity() {
             if (!closed) {
                 status = "Shizuku 可用，等待授权 / 连接"
                 try {
-                    if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) bindReader()
+                    if (!useRoot && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) bindReader()
                 } catch (e: Exception) { error = e.message ?: "检查权限失败" }
             }
         }
     }
     private val dead = Shizuku.OnBinderDeadListener {
-        runOnUiThread { if (!closed) loseConnection("Shizuku 已停止，请重新连接") }
+        runOnUiThread { if (!closed && !useRoot) loseConnection("Shizuku 已停止，请重新连接") }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,8 +93,15 @@ class MainActivity : ComponentActivity() {
                     pendingExport = null
                     if (uri != null && file != null) exportDocument(file, uri)
                 }
-                WatchfaceScreen(status, connected, busy, error, notice, items, selected,
-                    ::requestAccess, ::scan, ::selectCache,
+                WatchfaceScreen(if (useRoot) rootStatus else status,
+                    if (useRoot) rootAuthorized else connected, busy, error, notice, items, selected,
+                    useRoot, { root ->
+                        if (useRoot != root) {
+                            releaseReader()
+                            useRoot = root
+                            items = emptyList(); error = null; notice = null
+                        }
+                    }, ::requestAccess, ::scan, ::selectCache,
                     { importer.launch(arrayOf("*/*")) },
                     {
                         selected?.let {
@@ -109,16 +122,30 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestAccess() {
+        if (useRoot) {
+            operation {
+                rootAuthorized = false
+                rootStatus = "等待 su 授权（20 秒超时）；请在 Root 管理器允许本应用"
+                try {
+                    rootStatus = runInterruptible(Dispatchers.IO) { rootSource.authorize() }
+                    rootAuthorized = true
+                } catch (e: Exception) {
+                    rootStatus = "Root 检查失败：${e.message}；不会自动修改 Root 策略"
+                    throw e
+                }
+            }
+            return
+        }
         try {
             error = null
             if (!Shizuku.pingBinder()) { status = "Shizuku 未运行"; error = status; return }
-            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) bindReader()
+            if (!useRoot && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) bindReader()
             else { status = "等待 Shizuku 授权"; Shizuku.requestPermission(100) }
         } catch (e: Exception) { error = e.message ?: "Shizuku 请求失败" }
     }
 
     private fun bindReader() {
-        if (closed || connection != null) return
+        if (closed || useRoot || connection != null) return
         status = "正在绑定缓存读取服务…"
         val c = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName, binder: IBinder) {
@@ -189,6 +216,15 @@ class MainActivity : ComponentActivity() {
 
     private fun scan() = operation {
         items = emptyList()
+        if (useRoot) {
+            check(rootAuthorized) { "请先授权 / 检查 Root" }
+            val result = runInterruptible(Dispatchers.IO) { rootSource.scan() }
+            items = result.files.map { WatchfaceItem(it.name, it.path, it.size, it.modified) }
+            error = result.diagnostics.joinToString("\n").takeIf { it.isNotEmpty() }
+            notice = "Root 找到 ${items.size} 个 BIN 文件" +
+                if (result.truncated) "；达到大小 / 深度 / 数量限制，结果不完整" else "；扫描完成"
+            return@operation
+        }
         val service = reader ?: throw IOException("请先连接 Shizuku")
         val result = withContext(Dispatchers.IO) {
             val json = JSONObject(service.scan())
@@ -213,8 +249,26 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun selectCache(item: WatchfaceItem) = operation {
-        val service = reader ?: throw IOException("请先连接 Shizuku")
-        selected = copyAndInspect { ParcelFileDescriptor.AutoCloseInputStream(service.openReadOnly(item.path)) }
+        selected = if (useRoot) {
+            check(rootAuthorized) { "请先授权 / 检查 Root" }
+            // Keep ownership outside runInterruptible: prompt coroutine cancellation
+            // can discard a successfully returned value while switching to Main.
+            var copied: File? = null
+            try {
+                runInterruptible(Dispatchers.IO) {
+                    val file = rootSource.copyInto(directory, item.path)
+                    copied = file
+                    if (Thread.currentThread().isInterrupted) throw IOException("读取已取消")
+                    WatchfaceParser.inspect(file)
+                }
+            } catch (e: Exception) {
+                withContext(NonCancellable + Dispatchers.IO) { copied?.delete() }
+                throw e
+            }
+        } else {
+            val service = reader ?: throw IOException("请先连接 Shizuku")
+            copyAndInspect { ParcelFileDescriptor.AutoCloseInputStream(service.openReadOnly(item.path)) }
+        }
         notice = "已创建应用私有副本；不会修改缓存源文件"
     }
 
@@ -257,7 +311,8 @@ data class WatchfaceItem(val name: String, val path: String, val size: Long, val
 @Composable
 private fun WatchfaceScreen(
     status: String, connected: Boolean, busy: Boolean, error: String?, notice: String?,
-    files: List<WatchfaceItem>, selected: WatchfaceInfo?, request: () -> Unit, scan: () -> Unit,
+    files: List<WatchfaceItem>, selected: WatchfaceInfo?, useRoot: Boolean, mode: (Boolean) -> Unit,
+    request: () -> Unit, scan: () -> Unit,
     select: (WatchfaceItem) -> Unit, onImport: () -> Unit, export: () -> Unit, install: () -> Unit
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -265,7 +320,14 @@ private fun WatchfaceScreen(
             Text("Xiaomi Watchface Installer", style = MaterialTheme.typography.headlineSmall)
             Text("小米手环 9 Pro · 只读缓存提取 / 外部工具交接")
             Text(status)
-            Button(onClick = request, enabled = !busy && !connected) { Text("授权 / 连接 Shizuku") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { mode(true) }, enabled = !busy && !useRoot) { Text("Root（默认）") }
+                OutlinedButton(onClick = { mode(false) }, enabled = !busy && useRoot) { Text("Shizuku（可选）") }
+            }
+            Text(if (useRoot) "本应用通过 su 申请 Root；仅扫描两个官方外部缓存目录。拒绝、缺失、超限会分别报告。" else "Shizuku 需另行运行 / 授权；ADB UID 2000 不是 Root，可能无法读取 Android/data。")
+            Button(onClick = request, enabled = !busy) {
+                Text(if (useRoot) "授权 / 检查 Root" else "授权 / 连接 Shizuku")
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = scan, enabled = !busy && connected) { Text("扫描缓存") }
                 Button(onClick = onImport, enabled = !busy) { Text("导入 BIN") }
