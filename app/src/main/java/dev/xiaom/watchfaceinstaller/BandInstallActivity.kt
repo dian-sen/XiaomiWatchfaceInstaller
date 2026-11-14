@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.ClipData
 import androidx.core.content.FileProvider
 import android.os.Bundle
-import android.view.WindowManager
 import android.widget.*
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,6 +29,23 @@ class BandInstallActivity : ComponentActivity() {
     private lateinit var summary: TextView
     private lateinit var devices: LinearLayout
     private var workFile: File? = null
+    private lateinit var editButton: Button
+    private lateinit var returnButton: Button
+    private lateinit var fileProgress: ProgressBar
+    private var fileBusy = true
+    private fun setFileBusy(value: Boolean) {
+        fileBusy = value
+        fileProgress.visibility = if (value) android.view.View.VISIBLE else android.view.View.GONE
+        editButton.isEnabled = !value && workFile != null
+        returnButton.isEnabled = !value && workFile != null
+    }
+    private fun feedback(message: String) {
+        status.text = message
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+    private fun currentFile(): File? = workFile.also {
+        if (it == null) feedback("工作副本尚未就绪或加载失败，请返回主界面重新选择 BIN。")
+    }
     private var scanJob: Job? = null
     private var connectionJob: Job? = null
     private var transport: AndroidBleTransport? = null
@@ -39,15 +55,15 @@ class BandInstallActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 24, 32, 24) }
         setContentView(ScrollView(this).apply { addView(content) })
         fun label(text: String) = TextView(this).apply { this.text = text; setPadding(0, 10, 0, 10); content.addView(this) }
         label("小米手环 9 Pro · 副本编辑与 BLE 诊断")
         label(XiaomiBleProfile.BLOCK_REASON)
         label("当前未实现已验证的 9 Pro 直装。可检查私有工作副本、等长修改 ID，以及自愿进行 BLE 服务诊断。不读取/索取 AuthKey，不自动切换 SPP，不写入认证或表盘数据。")
-        summary = label("正在验证私有文件…")
+        summary = label("正在验证私有文件…").apply { textSize = 18f; setTextIsSelectable(true) }
         status = label("未扫描，未连接，未安装。")
+        fileProgress = ProgressBar(this).also { content.addView(it) }
         val newId = EditText(this).apply {
             hint = "新 ID（保持当前 9 或 12 位长度）"
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
@@ -55,29 +71,44 @@ class BandInstallActivity : ComponentActivity() {
             filters = arrayOf(android.text.InputFilter.LengthFilter(12))
         }
         content.addView(newId)
-        content.addView(Button(this).apply {
+        editButton = Button(this).apply {
+            isEnabled = false
             text = "生成改 ID 副本（不覆盖源文件）"
             setOnClickListener {
-                val source = workFile ?: return@setOnClickListener
+                val source = currentFile() ?: return@setOnClickListener
+                if (fileBusy) return@setOnClickListener
                 val requested = newId.text.toString()
                 AlertDialog.Builder(this@BandInstallActivity)
                     .setTitle("仅修改副本的 ID？")
                     .setMessage("保持原 ID 字节长度。不会修复签名/校验，也不保证手环接受。原文件不覆盖。")
                     .setNegativeButton("取消", null)
-                    .setPositiveButton("生成副本") { _, _ -> lifecycleScope.launch {
-                        try {
-                            val result = withContext(Dispatchers.IO) { WatchfaceIdEditor.createCopy(filesDir, source, requested) }
-                            workFile = result.file; renderSummary()
-                            status.text = "已生成新副本：${result.oldId} → ${result.newId}。尚未安装；签名和兼容性未验证。"
-                        } catch (e: Exception) { if (e is CancellationException) throw e; status.text = "修改拒绝：${e.message}" }
-                    } }.show()
+                    .setPositiveButton("生成副本") { _, _ ->
+                        if (fileBusy) return@setPositiveButton
+                        setFileBusy(true)
+                        status.text = "正在生成并校验改 ID 副本…"
+                        lifecycleScope.launch {
+                            try {
+                                val result = withContext(Dispatchers.IO) { WatchfaceIdEditor.createCopy(filesDir, source, requested) }
+                                workFile = result.file
+                                renderSummary()
+                                summary.text = "ID 修改成功：${result.oldId} → ${result.newId}\n${summary.text}"
+                                feedback("ID 修改成功：${result.oldId} → ${result.newId}\nSHA-256：${result.sha256}\n尚未安装；签名和兼容性未验证。")
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                feedback("修改拒绝：${e.message}")
+                            } finally { setFileBusy(false) }
+                        }
+                    }.show()
             }
-        })
-        content.addView(Button(this).apply {
+        }
+        content.addView(editButton)
+        returnButton = Button(this).apply {
+            isEnabled = false
             text = "返回当前副本，交主界面导出"
             setOnClickListener {
-                val file = workFile ?: return@setOnClickListener
-                isEnabled = false
+                val file = currentFile() ?: return@setOnClickListener
+                if (fileBusy) return@setOnClickListener
+                setFileBusy(true)
                 lifecycleScope.launch {
                     try {
                         val info = withContext(Dispatchers.IO) { WatchfaceParser.inspect(file) }
@@ -94,15 +125,17 @@ class BandInstallActivity : ComponentActivity() {
                         finish()
                     } catch (e: Exception) {
                         if (e is CancellationException) throw e
-                        status.text = "返回副本失败：${e.message}"
-                    } finally { isEnabled = true }
+                        feedback("返回副本失败：${e.message}")
+                    } finally { setFileBusy(false) }
                 }
             }
-        })
+        }
+        content.addView(returnButton)
         content.addView(Button(this).apply {
             text = "查看安装确认与阻塞原因"
             setOnClickListener { lifecycleScope.launch {
-                val file = workFile ?: return@launch
+                val file = currentFile() ?: return@launch
+                if (fileBusy) { feedback("副本正在处理，请稍后再试。"); return@launch }
                 try {
                     val info = withContext(Dispatchers.IO) { WatchfaceParser.inspect(file) }
                     AlertDialog.Builder(this@BandInstallActivity).setTitle("安装前检查（当前不可执行）")
@@ -122,15 +155,21 @@ class BandInstallActivity : ComponentActivity() {
                 val path = savedInstanceState?.getString(STATE_WORK_PATH) ?: intent.getStringExtra(EXTRA_PRIVATE_PATH) ?: error("缺少私有工作副本路径")
                 workFile = withContext(Dispatchers.IO) { privateSnapshot(path) }
                 renderSummary()
-            } catch (e: Exception) { if (e is CancellationException) throw e; summary.text = "拒绝文件：${e.message}" }
+                feedback("工作副本已就绪，可修改 ID 或返回主界面导出。")
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                workFile = null
+                summary.text = "拒绝文件：${e.message}"
+                feedback("加载失败：${e.message}")
+            } finally { setFileBusy(false) }
         }
     }
     private fun privateSnapshot(path: String): File {
-        val input = File(path)
-        require(input.isAbsolute && !Files.isSymbolicLink(input.toPath())) { "只接受绝对私有文件路径" }
-        val canonical = input.canonicalFile
-        require(listOf(filesDir, cacheDir).any { canonical.toPath().startsWith(it.canonicalFile.toPath()) }) { "拒绝非本 App 私有文件" }
-        require(canonical.isFile && canonical.length() in 0xa8L..WatchfaceIdEditor.MAX_BYTES)
+        val input = File(path).toPath()
+        val root = listOf(filesDir, cacheDir).firstOrNull {
+            input.startsWith(it.absoluteFile.toPath()) || input.startsWith(it.canonicalFile.toPath())
+        } ?: throw IllegalArgumentException("拒绝非本 App 私有文件")
+        val canonical = WorkingCopyResult.privateFile(root, path)
         val watchfaces = File(filesDir, "watchfaces")
         require(!Files.isSymbolicLink(watchfaces.toPath()))
         val directory = File(watchfaces, "band-install").apply { mkdirs() }
@@ -146,13 +185,13 @@ class BandInstallActivity : ComponentActivity() {
                 while (count < header.size) { val n = inputStream.read(header, count, header.size - count); require(n > 0); count += n }
                 WatchfaceIdEditor.validatedId(header)
             }
-            return result
+            return WorkingCopyResult.privateFile(filesDir, result.path)
         } catch (e: Throwable) { result.delete(); throw e }
     }
     private suspend fun renderSummary() {
         val file = workFile ?: return
         val info = withContext(Dispatchers.IO) { WatchfaceParser.inspect(file) }
-        summary.text = "私有工作副本：${file.name}\n格式：${info.format}\nID：${info.id}\n大小：${file.length()} 字节\nSHA-256：${info.sha256}\n型号兼容性/签名：未验证"
+        summary.text = "私有工作副本：${file.name}\n格式：${info.format}\n当前 BIN ID：${info.id}\n大小：${file.length()} 字节\nSHA-256：${info.sha256}\n型号兼容性/签名：未验证"
     }
     private fun scan() {
         stop(); candidates.clear(); devices.removeAllViews()

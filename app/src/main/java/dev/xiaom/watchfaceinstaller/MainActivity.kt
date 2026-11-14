@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.widget.Toast
 import android.os.Bundle
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
@@ -80,7 +81,8 @@ class MainActivity : ComponentActivity() {
                 selectedIdEdited = wasEdited || updated.id != original.id
                 selectedPreview = preview?.takeIf { it.isFile && it.canonicalFile.parentFile == previewDirectory.canonicalFile }
                 previewNotice = if (selectedPreview != null) "保留原表盘预览（仅 ID 副本修改，未重新认证）" else "无可用预览；可只导出 BIN"
-                notice = "已接收新工作副本，重新计算 SHA-256 / ID；原文件未覆盖" + if (selectedIdEdited) "；导出名附当前 ID" else ""
+                notice = "当前 BIN ID：${original.id} → ${updated.id}\nSHA-256：${updated.sha256}\n已接收新工作副本；原文件未覆盖，可继续导出。"
+                Toast.makeText(this, "已接收副本：${original.id} → ${updated.id}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -93,6 +95,16 @@ class MainActivity : ComponentActivity() {
         require(checked.format == "XIAOMI_BIN" && WatchfaceXml.validId(checked.id)) { "仅支持已识别 ID 的 Xiaomi BIN" }
         pendingBandOriginal = current; pendingBandPreview = selectedPreview; pendingBandEdited = selectedIdEdited
         bandEditor.launch(Intent(this, BandInstallActivity::class.java).putExtra("private_path", current.file.path))
+    }
+    private fun rereadCurrentId() = operation {
+        val current = selected ?: throw IOException("请先选择 BIN")
+        val checked = withContext(Dispatchers.IO) {
+            WatchfaceParser.inspect(WorkingCopyResult.privateFile(filesDir, current.file.path))
+        }
+        selectedIdEdited = selectedIdEdited || checked.id != current.id
+        selected = checked.copy(metadata = current.metadata, metadataWarnings = current.metadataWarnings)
+        notice = "已从当前 BIN 重读 ID：${checked.id ?: "未识别"}\nSHA-256：${checked.sha256}\n原 XML ID 保留为来源信息，不代表当前 BIN。"
+        Toast.makeText(this, "当前 BIN ID：${checked.id ?: "未识别"}", Toast.LENGTH_LONG).show()
     }
     private fun saveInfo(info: WatchfaceInfo) = Bundle().apply {
         putString("path", info.file.path); putString("sha", info.sha256); putString("id", info.id)
@@ -177,7 +189,7 @@ class MainActivity : ComponentActivity() {
                             pendingPairBin = it.file; pendingPairPreview = selectedPreview; pendingPairName = exportBase(it)
                             pairExporter.launch(null)
                         }
-                    }, previewNotice, selectedIdEdited, ::openBandEditor, { install(false) }, { install(true) })
+                    }, previewNotice, selectedIdEdited, ::rereadCurrentId, ::openBandEditor, { install(false) }, { install(true) })
             }
         }
         Shizuku.addRequestPermissionResultListener(permission)
@@ -283,7 +295,10 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             try { block() }
             catch (e: CancellationException) { throw e }
-            catch (e: Exception) { error = e.message ?: e.javaClass.simpleName }
+            catch (e: Exception) {
+                error = e.message ?: e.javaClass.simpleName
+                Toast.makeText(this@MainActivity, error, Toast.LENGTH_LONG).show()
+            }
             finally { busy = false }
         }
     }
@@ -380,13 +395,15 @@ class MainActivity : ComponentActivity() {
         selectedPreview = preview.file
         previewNotice = (if (preview.file != null) "预览已保存为应用私有副本（${preview.file.extension.uppercase()}）" else "无可用预览，仅导出 BIN") +
             preview.warnings.joinToString("；", prefix = if (preview.warnings.isEmpty()) "" else "；")
-        notice = "已创建应用私有副本；不会修改缓存源文件"
+        notice = "已选中私有副本，当前 BIN ID：${selected?.id ?: "未识别"}；不会修改缓存源文件"
+        Toast.makeText(this, notice, Toast.LENGTH_LONG).show()
     }
 
     private fun importDocument(uri: Uri) = operation {
         selected = null; selectedIdEdited = false; selectedPreview = null; previewNotice = "导入的 BIN 无配套预览；可只导出 BIN"
         selected = copyAndInspect { contentResolver.openInputStream(uri) ?: throw IOException("无法读取所选文档") }
-        notice = "已导入私有副本（最多 32 MiB）；格式识别不代表设备兼容性验证"
+        notice = "已导入私有副本，当前 BIN ID：${selected?.id ?: "未识别"}；格式识别不代表设备兼容性验证"
+        Toast.makeText(this, notice, Toast.LENGTH_LONG).show()
     }
 
     private fun exportPair(bin: File, preview: File?, name: String, tree: Uri) = operation {
@@ -423,7 +440,7 @@ private fun WatchfaceScreen(
     status: String, connected: Boolean, busy: Boolean, error: String?, notice: String?,
     files: List<WatchfaceItem>, selected: WatchfaceInfo?, useRoot: Boolean, mode: (Boolean) -> Unit,
     request: () -> Unit, scan: () -> Unit,
-    select: (WatchfaceItem) -> Unit, onImport: () -> Unit, export: () -> Unit, exportPair: () -> Unit, previewNotice: String, idEdited: Boolean, internalInstall: () -> Unit, install: () -> Unit, share: () -> Unit
+    select: (WatchfaceItem) -> Unit, onImport: () -> Unit, export: () -> Unit, exportPair: () -> Unit, previewNotice: String, idEdited: Boolean, rereadId: () -> Unit, internalInstall: () -> Unit, install: () -> Unit, share: () -> Unit
 ) {
     var filter by rememberSaveable { mutableStateOf(BinFilter.CANDIDATE) }
     var keyword by rememberSaveable { mutableStateOf("") }
@@ -434,6 +451,17 @@ private fun WatchfaceScreen(
         item {
             Text("Xiaomi Watchface Installer", style = MaterialTheme.typography.headlineSmall)
             Text("小米手环 9 Pro · 只读缓存提取 / 外部工具交接")
+            selected?.let { info ->
+                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("当前 BIN ID：${info.id ?: "未识别"}", style = MaterialTheme.typography.headlineSmall)
+                        Text("原 XML ID：${info.metadata?.id ?: "无配套 XML"}", style = MaterialTheme.typography.titleMedium)
+                        Text("XML ID 仅为原始来源信息；以当前 BIN ID 为准。")
+                        Button(onClick = rereadId, enabled = !busy) { Text("重读当前 ID") }
+                    }
+                }
+            }
             Text(status)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { mode(true) }, enabled = !busy && !useRoot) { Text("Root（默认）") }

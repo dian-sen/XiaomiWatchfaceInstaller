@@ -3,7 +3,6 @@ package dev.xiaom.watchfaceinstaller
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.file.Files
-import java.nio.file.LinkOption
 import java.security.MessageDigest
 
 /** A byte-preserving header edit, NOT a signature/checksum bypass or compatibility conversion. */
@@ -30,10 +29,7 @@ object WatchfaceIdEditor {
     /** Input and output must both live under the app's canonical private directory. */
     fun createCopy(privateRoot: File, source: File, newId: String): Result {
         val root = privateRoot.canonicalFile
-        val original = source.canonicalFile
-        require(original.toPath().startsWith(root.toPath()) && original != root) { "仅允许 App 私有工作副本" }
-        require(!Files.isSymbolicLink(source.toPath()) && Files.isRegularFile(original.toPath(), LinkOption.NOFOLLOW_LINKS)) { "拒绝符号链接或非普通文件" }
-        require(original.length() in 0xa8L..MAX_BYTES) { "文件大小不受支持" }
+        val original = WorkingCopyResult.privateFile(privateRoot, source.path)
         require(newId.matches(Regex("(?:[0-9]{9}|[0-9]{12})"))) { "新 ID 必须为 9 或 12 位数字" }
         val watchfaces = File(root, "watchfaces")
         require(!Files.isSymbolicLink(watchfaces.toPath())) { "拒绝表盘目录符号链接" }

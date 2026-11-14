@@ -48,16 +48,31 @@ object WatchfaceExport {
  */
 object WorkingCopyResult {
     fun privateFile(root: File, path: String): File {
-        val input = File(path)
-        val canonicalRoot = root.canonicalFile
-        require(input.isAbsolute && input.absoluteFile == input.canonicalFile &&
-            input.canonicalFile.toPath().startsWith(canonicalRoot.toPath()) && input != canonicalRoot) {
-            "返回文件不在规范的应用私有目录内（不接受符号链接）"
+        val input = File(path).toPath()
+        val canonicalRoot = root.canonicalFile.toPath()
+        val lexicalRoot = root.absoluteFile.toPath()
+        val message = "返回文件不在规范的应用私有目录内（不接受目录内符号链接或 ..）"
+        require(input.isAbsolute && input.none { it.toString() == ".." }) { message }
+        // Trust only the supplied app root's canonical identity. Android may expose that
+        // root through /data/data or /data/user/0; aliases BELOW it are never trusted.
+        val relative = when {
+            input.startsWith(lexicalRoot) -> lexicalRoot.relativize(input)
+            input.startsWith(canonicalRoot) -> canonicalRoot.relativize(input)
+            else -> throw IllegalArgumentException(message)
         }
-        require(java.nio.file.Files.isRegularFile(input.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
-            input.length() in 0xa8L..WatchfaceFiles.MAX_BYTES) { "返回文件不是有效大小的私有普通文件" }
-        return input
+        require(relative.toString().isNotEmpty()) { message }
+        var checked = canonicalRoot
+        relative.forEach { part ->
+            checked = checked.resolve(part)
+            require(!java.nio.file.Files.isSymbolicLink(checked)) { message }
+        }
+        val file = checked.toFile().canonicalFile
+        require(file.toPath().startsWith(canonicalRoot) && file.toPath() != canonicalRoot) { message }
+        require(java.nio.file.Files.isRegularFile(checked, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
+            file.length() in 0xa8L..WatchfaceFiles.MAX_BYTES) { "返回文件不是有效大小的私有普通文件" }
+        return file
     }
+
     fun accept(root: File, path: String, original: WatchfaceInfo): WatchfaceInfo {
         val source = privateFile(root, original.file.path)
         val file = privateFile(root, path)
