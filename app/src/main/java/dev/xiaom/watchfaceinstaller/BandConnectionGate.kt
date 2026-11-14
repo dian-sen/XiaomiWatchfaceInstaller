@@ -17,6 +17,7 @@ object BandConnectionGate {
         val phase = report.phase
         val detail = when (phase) {
             dev.xiaom.watchfaceinstaller.classic.ClassicPhase.BONDED_CHECK -> "系统配对或蓝牙权限检查失败"
+            dev.xiaom.watchfaceinstaller.classic.ClassicPhase.DISCOVERY_CANCEL -> "停止本机蓝牙发现失败；未创建连接，不会跳过此步骤"
             dev.xiaom.watchfaceinstaller.classic.ClassicPhase.SOCKET_CONNECT -> "安全 RFCOMM / SDP 连接失败或已断开；尚未进行密钥认证"
             dev.xiaom.watchfaceinstaller.classic.ClassicPhase.VERSION_WRITE -> "SPP 版本请求写入失败"
             dev.xiaom.watchfaceinstaller.classic.ClassicPhase.VERSION_READ -> "SPP 版本响应读取失败；不是密钥选择错误"
@@ -25,6 +26,12 @@ object BandConnectionGate {
             dev.xiaom.watchfaceinstaller.classic.ClassicPhase.LIST_CONFIRM -> "加密列表往返确认失败"
             else -> "Classic 协议操作失败"
         }
-        return "$phase：$detail\n${report.diagnostic()}"
+        val kind = when {
+            report.causes.any { it.type == "Timeout" } -> "超时"
+            report.causes.any { it.type == "EOFException" } -> "EOF（连接流已结束）"
+            report.causes.any { it.type == "IOException" } -> "I/O 失败（不据 read -1 推断固件传输类型）"
+            else -> "操作失败"
+        }
+        return "$phase：$detail\n$kind\n${report.diagnostic()}"
     }
 }

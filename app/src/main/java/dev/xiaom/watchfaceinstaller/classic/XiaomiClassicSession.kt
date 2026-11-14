@@ -35,6 +35,7 @@ class XiaomiClassicSession(
     @Volatile private var lastFailure: ClassicFailure? = null
     /** Synchronous snapshots: independent of StateFlow collector scheduling; retained on close. */
     val phase: ClassicPhase get() = lastPhase
+    val transportSnapshot: ClassicTransportSnapshot get() = transport.snapshot
     val failure: ClassicFailure? get() = lastFailure
     private fun stage(value: ClassicPhase) { lastPhase = value }
     private val operation = Mutex()
@@ -308,7 +309,7 @@ class XiaomiClassicSession(
         try { return withContext(Dispatchers.IO) { block() } }
         catch (e: Throwable) {
             synchronized(stateLock) {
-                if (lastFailure == null) lastFailure = ClassicFailure.capture(lastPhase, e)
+                if (lastFailure == null) lastFailure = ClassicFailure.capture(lastPhase, e, transport.snapshot)
                 lastPhase = checkNotNull(lastFailure).phase
                 if (state.value != State.CLOSED) mutableState.value = State.FAILED
             }

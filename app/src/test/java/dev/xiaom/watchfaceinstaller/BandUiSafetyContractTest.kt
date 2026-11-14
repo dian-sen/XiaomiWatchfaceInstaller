@@ -18,7 +18,7 @@ class BandUiSafetyContractTest {
         assertTrue(auth.contains("key.fill(0)"))
         assertTrue(auth.contains("adapter.bondedDevices"))
         assertFalse(band.contains(".createBond("))
-        assertTrue(auth.contains("permission.launch(Manifest.permission.BLUETOOTH_CONNECT)"))
+        assertTrue(auth.contains("permission.launch(ClassicPermissions.required(Build.VERSION.SDK_INT).toTypedArray())"))
     }
     @Test fun consentAndRevalidationPrecedeOnlyUploadCall() {
         val flow = band.substringAfter("private fun confirmInstall()").substringBefore("private fun scanDiagnostic()")
@@ -77,7 +77,24 @@ class BandUiSafetyContractTest {
         for (forbidden in listOf("createInsecure", "getMethod(", "fetchUuidsWithSdp(", "startDiscovery(", "createBond("))
             assertFalse(forbidden, transport.contains(forbidden))
         assertFalse(band.contains("authenticationPhase"))
-        assertTrue(band.contains("link.failure ?: ClassicFailure.capture(link.phase, error)"))
+        assertTrue(band.contains("link.failure ?: ClassicFailure.capture(link.phase, error, link.transportSnapshot)"))
+    }
+    @Test fun classicDiscoveryStopPermissionsAndDiagnosticsAreWired() {
+        val auth = band.substringAfter("private fun authenticate()").substringBefore("private fun confirmInstall()")
+        assertTrue(auth.indexOf("if (!classicPermissionsGranted())") < auth.indexOf("val link ="))
+        assertTrue(band.contains("ActivityResultContracts.RequestMultiplePermissions()"))
+        assertTrue(band.contains("if (classicPermissionsGranted()) authenticate() else"))
+        assertTrue(band.contains("SCAN 仅用于停止本机发现，不启动扫描"))
+        assertTrue(band.contains("ClassicFirmware.diagnostic(firmware.text.toString())"))
+        assertFalse(auth.contains("3.1.190"))
+        val transport = source("classic/AndroidClassicTransport")
+        assertTrue(transport.indexOf("ClassicDiscovery.stop(") < transport.indexOf("device.createRfcommSocketToServiceRecord("))
+        assertTrue(transport.contains("cancel = { adapter.cancelDiscovery() }"))
+        assertTrue(transport.contains("ClassicPhase.DISCOVERY_CANCEL"))
+        assertTrue(transport.contains("synchronized(lock)"))
+        assertTrue(transport.contains("SystemClock.elapsedRealtime() - started"))
+        assertFalse(transport.contains(".startDiscovery("))
+        assertFalse(transport.contains(".startScan("))
     }
     @Test fun mainEntryStillValidatesPrivateHash() {
         val entry = source("MainActivity").substringAfter("private fun openBandEditor()").substringBefore("private fun rereadCurrentId()")

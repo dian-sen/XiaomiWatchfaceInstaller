@@ -151,3 +151,9 @@ AuthKey 默认仍只显示掩码。用户必须二次确认风险后，才可短
 修复失败文案丢失阶段的问题：失败发生时同步保存 SOCKET_CONNECT、VERSION_READ、AUTH_NONCE、AUTH_PROOF、LIST_CONFIRM 等阶段，断连后仍可查看并复制脱敏因果链。不再把所有 IOException 都称为距离/配对失败。显示所选系统配对设备类型与缓存SPP UUID线索，不主动执行SDP发现或额外通信。
 
 已核对官方固定源码：标准SPP UUID和secure RFCOMM与本实现一致，无证据支持随意改UUID、insecure或强制channel1。因此此版本是可定位失败的诊断改进，**不是已经解决真机连接失败的声明**。见 docs/CLASSIC-CONNECTION-AUDIT.md。失败后密钥清除、按钮灰色不表示之前没有选过密钥。复制诊断不包含密钥、完整MAC或BIN内容。
+
+## 0.7.3 Classic 建连前发现处理
+
+对已配对9Pro的Classic连接，先检查本机是否正在discovery；仅在正在发现时调用cancelDiscovery一次，并最多等待1500ms停止。取消拒绝或停止超时明确失败，不继续创建socket。Android12+会要求CONNECT与SCAN（只为停止发现，不主动扫描），拒绝时不偷偷跳过。
+
+脱敏诊断增加discoveryBefore/discoveryAfter与socketElapsedMs，以及仅供记录的固件版本。未观测字段为null，不假报false。固件3.1.190目前仍没有实际互通验证，不据版本号强制BLE/Classic、不自动改用insecure或反射channel1。此版本只能宣称补齐前置处理与诊断，不能保证解决SOCKET_CONNECT的read ret -1。

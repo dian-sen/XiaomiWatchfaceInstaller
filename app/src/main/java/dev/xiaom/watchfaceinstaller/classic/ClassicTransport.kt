@@ -6,6 +6,7 @@ import java.io.Closeable
 /** Ordered RFCOMM byte stream, not packets. read may split or coalesce arbitrarily.
  * close MUST interrupt connect/read/write. No retry, pairing, or reconnect inside transports. */
 interface ClassicTransport : Closeable {
+    val snapshot: ClassicTransportSnapshot get() = ClassicTransportSnapshot()
     suspend fun connect(mac: String)
     suspend fun read(): ByteArray
     suspend fun write(bytes: ByteArray)

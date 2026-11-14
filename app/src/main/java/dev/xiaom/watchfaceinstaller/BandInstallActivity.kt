@@ -42,14 +42,16 @@ class BandInstallActivity : ComponentActivity() {
     private lateinit var connectionHint: TextView
     private lateinit var sessionState: TextView
     private lateinit var bondedInfo: TextView
+    private lateinit var firmware: EditText
+    private var attemptedFirmware = "未知"
     private var deviceDiagnostic = "selected-bonded-device=unknown"
     private var lastDiagnostic = "尚未尝试连接；无失败诊断。"
     private var lastClassicPhase = ClassicPhase.IDLE
     private fun diagnosticText() = "Classic diagnostic (redacted)\n" +
         "service=${ClassicProfile.SERVICE_UUID} secure=true SDP=UUID\n" +
-        "$deviceDiagnostic\n$lastDiagnostic\n无 key、完整 MAC、BIN 内容；不扫描、不自动重连。"
+        "firmware(user-provided; diagnostic-only)=$attemptedFirmware\n$deviceDiagnostic\n$lastDiagnostic\n无 key、完整 MAC、BIN 内容；不扫描、不自动重连。"
     private fun rememberFailure(link: XiaomiClassicSession, error: Throwable): ClassicFailure {
-        val report = link.failure ?: ClassicFailure.capture(link.phase, error)
+        val report = link.failure ?: ClassicFailure.capture(link.phase, error, link.transportSnapshot)
         lastClassicPhase = report.phase
         lastDiagnostic = report.diagnostic()
         return report
@@ -84,12 +86,12 @@ class BandInstallActivity : ComponentActivity() {
     private var epoch = 0
     private var records: List<AuthKeyRecord> = emptyList()
     private var selected: Int? = null
-    private val permission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+    private val permission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
         val resume = pendingPermission && foreground
         pendingPermission = false
         if (resume) {
             busy = false
-            if (granted) authenticate() else { status.text = "蓝牙连接权限未获准；未连接、未安装。"; refresh() }
+            if (classicPermissionsGranted()) authenticate() else { status.text = "蓝牙 CONNECT + SCAN 权限未完整获准；SCAN 仅用于停止本机发现，不启动扫描。未连接、未安装，不会跳过。"; refresh() }
         }
     }
 
@@ -124,6 +126,14 @@ class BandInstallActivity : ComponentActivity() {
             getSystemService(android.content.ClipboardManager::class.java)
                 .setPrimaryClip(ClipData.newPlainText("Classic diagnostic", diagnosticText()))
             Toast.makeText(this, "已复制脱敏诊断（无密钥、完整 MAC 或 BIN 内容）", Toast.LENGTH_SHORT).show()
+        }
+        label("连接前会停止本机已有的 Bluetooth discovery；Android 12+ 需要 CONNECT + SCAN 权限。此连接流程不启动扫描，拒绝任一权限将停止连接。停止发现不是连接已修复的证明。")
+        label("固件（用户可选填写，例如 3.1.190；默认未知）。仅供诊断，不用于选择传输或固件 profile。")
+        firmware = EditText(this).apply {
+            hint = "未知（可选固件版本）"
+            isSaveEnabled = false
+            filters = arrayOf(android.text.InputFilter.LengthFilter(32))
+            content.addView(this)
         }
         connectionHint = label("请先读取并选择AuthKey")
         progress = ProgressBar(this).also { content.addView(it) }
@@ -175,6 +185,7 @@ class BandInstallActivity : ComponentActivity() {
         edit.isEnabled = enabled && workFile != null && session == null
         back.isEnabled = enabled && workFile != null
         newId.isEnabled = edit.isEnabled
+        firmware.isEnabled = enabled && session == null
         rootRead.isEnabled = enabled && session == null && workFile != null
         showBondedSelection()
         val blocked = connectionBlockReason()
@@ -356,13 +367,16 @@ class BandInstallActivity : ComponentActivity() {
             }
         }
     }
+    private fun classicPermissionsGranted() = ClassicPermissions.granted(Build.VERSION.SDK_INT) {
+        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    }
     private fun authenticate() {
         if (!foreground || busy || dialog != null || session != null) return
         val blocked = connectionBlockReason()
         if (blocked != null) { status.text = blocked; refresh(); return }
-        if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+        if (!classicPermissionsGranted()) {
             pendingPermission = true; busy = true; refresh()
-            permission.launch(Manifest.permission.BLUETOOTH_CONNECT)
+            permission.launch(ClassicPermissions.required(Build.VERSION.SDK_INT).toTypedArray())
             return
         }
         launchOperation {
@@ -371,7 +385,7 @@ class BandInstallActivity : ComponentActivity() {
                 status.text = "请先读取并选择AuthKey；请选设备并检查 MAC 格式。"
                 refresh(); return@launchOperation
             }
-            // Only query already-bonded devices. Never call createBond, discovery or BLE scanning.
+            // Only query already-bonded devices. Transport stops existing local discovery; never starts it.
             val adapter = getSystemService(BluetoothManager::class.java)?.adapter
             if (adapter == null || !adapter.isEnabled || adapter.bondedDevices.none {
                     it.address.equals(record.mac, true) && it.bondState == BluetoothDevice.BOND_BONDED
@@ -381,6 +395,7 @@ class BandInstallActivity : ComponentActivity() {
                 return@launchOperation
             }
             submitted = false; confirmed = false
+            attemptedFirmware = ClassicFirmware.diagnostic(firmware.text.toString())
             val link = XiaomiClassicSession(AndroidClassicTransport(this), Build.VERSION.SDK_INT, Build.MODEL, "CN")
             session = link
             lastDiagnostic = "连接尝试进行中"
@@ -395,6 +410,7 @@ class BandInstallActivity : ComponentActivity() {
             clearKeys()
             try {
                 link.connectAndAuthenticate(mac, key)
+                lastDiagnostic = "phase=${link.phase}\n${link.transportSnapshot.diagnostic()}"
                 status.text = "READY：Classic 已连接并通过认证。尚未安装；只有点击安装并再次确认才发送文件。"
             } catch (e: Exception) {
                 val report = rememberFailure(link, e)
@@ -407,7 +423,10 @@ class BandInstallActivity : ComponentActivity() {
                     } else {
                         val reason = BandConnectionGate.failure(report)
                         sessionState.text = "Classic：FAILED → CLOSED · ${report.phase}"
-                        status.text = "连接 / 认证失败：$reason\n已实际尝试连接；密钥随后按安全策略清空（按钮灰色不是此前未选 key）。再次尝试需重新读取；未安装。"
+                        val attempt = if (report.phase in listOf(ClassicPhase.BONDED_CHECK, ClassicPhase.DISCOVERY_CANCEL))
+                            "连接前置检查失败，未进入 socket.connect()"
+                        else "已实际尝试连接"
+                        status.text = "连接 / 认证失败：$reason\n$attempt；密钥随后按安全策略清空（按钮灰色不是此前未选 key）。再次尝试需重新读取；未安装。"
                     }
                 }
                 if (e is CancellationException && e !is TimeoutCancellationException) throw e
