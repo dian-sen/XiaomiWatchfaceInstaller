@@ -39,6 +39,7 @@ class BandInstallActivity : ComponentActivity() {
     }
     private lateinit var status: TextView
     private lateinit var summary: TextView
+    private lateinit var connectionHint: TextView
     private lateinit var sessionState: TextView
     private lateinit var choices: LinearLayout
     private lateinit var progress: ProgressBar
@@ -104,7 +105,8 @@ class BandInstallActivity : ComponentActivity() {
         label("修改 ID 不绕过签名或校验。认证 READY 仅表示连接就绪；上传进度不是安装成功。离开页面立即取消、清密钥并关闭连接，不自动重连或重刷。")
         summary = label("正在验证私有工作副本…").apply { setTextIsSelectable(true) }
         status = label("未读取密钥，未连接，未安装。")
-        sessionState = label("Classic：IDLE")
+        sessionState = label("Classic：IDLE（尚未连接）")
+        connectionHint = label("请先读取并选择AuthKey")
         progress = ProgressBar(this).also { content.addView(it) }
         newId = EditText(this).apply {
             hint = "新 ID（保持当前 9 或 12 位长度）"
@@ -155,13 +157,36 @@ class BandInstallActivity : ComponentActivity() {
         back.isEnabled = enabled && workFile != null
         newId.isEnabled = edit.isEnabled
         rootRead.isEnabled = enabled && session == null && workFile != null
-        connect.isEnabled = enabled && selected != null && session == null
-        install.isEnabled = enabled && workFile != null && session?.state?.value == XiaomiClassicSession.State.READY
+        val blocked = connectionBlockReason()
+        connectionHint.text = when {
+            session?.state?.value == XiaomiClassicSession.State.READY -> "Classic 认证就绪；可单独确认安装。BLE 诊断成功不代表认证成功。"
+            session != null -> "Classic 会话进行中；只有 READY 才可安装。"
+            blocked != null -> "$blocked。操作顺序：本页 Root 读取 → 点击候选记录 → 系统配对 → 连接并认证。BLE MTU / FE95 仅为诊断，不能解锁安装。"
+            else -> "已选择 AuthKey 与设备；点击连接并认证，不会自动安装。"
+        }
+        connect.isEnabled = BandConnectionGate.canConnect(enabled, session != null, blocked)
+        install.isEnabled = BandConnectionGate.canInstall(enabled, workFile != null, session?.state?.value?.name)
         for (i in 0 until choices.childCount) choices.getChildAt(i).isEnabled = enabled && session == null
         bleScan.isEnabled = enabled && session == null
         for (i in 0 until bleDevices.childCount) bleDevices.getChildAt(i).isEnabled = enabled && session == null
         progress.visibility = if (busy) View.VISIBLE else View.GONE
     }
+    private fun connectionBlockReason(): String? {
+        val record = records.getOrNull(selected ?: -1)
+        val hasPermission = Build.VERSION.SDK_INT < 31 || ContextCompat.checkSelfPermission(this,
+            Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        val bonded = if (hasPermission && record != null && BandConnectionGate.validMac(record.mac)) {
+            try {
+                val adapter = getSystemService(BluetoothManager::class.java)?.adapter
+                adapter != null && adapter.isEnabled && adapter.bondedDevices.any {
+                    it.address.equals(record.mac, true) && it.bondState == BluetoothDevice.BOND_BONDED
+                }
+            } catch (_: SecurityException) { null }
+        } else null
+        return BandConnectionGate.reason(records.isNotEmpty(), record?.mac, bonded)
+    }
+    override fun onResume() { super.onResume(); refresh() }
+
     /** Main-thread gate covers file work, Root, permission prompts, authentication and installation. */
     private fun launchOperation(block: suspend () -> Unit) {
         if (!foreground || busy || dialog != null) return
@@ -175,7 +200,7 @@ class BandInstallActivity : ComponentActivity() {
                     clearKeys()
                     session?.close(); session = null
                     observer?.cancel(); observer = null
-                    sessionState.text = "Classic：CLOSED"
+                    sessionState.text = "Classic：CLOSED（操作失败，连接已关闭）"
                 }
                 if (foreground && epoch == request) status.text = if (submitted && !confirmed)
                     "设备结果未知：安装请求可能已发送。请在手环确认状态；勿自动或盲目重刷。"
@@ -277,28 +302,37 @@ class BandInstallActivity : ComponentActivity() {
         }
     }
     private fun authenticate() {
-        if (!foreground || busy || dialog != null || session != null || selected == null) return
+        if (!foreground || busy || dialog != null || session != null) return
+        val blocked = connectionBlockReason()
+        if (blocked != null) { status.text = blocked; refresh(); return }
         if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             pendingPermission = true; busy = true; refresh()
             permission.launch(Manifest.permission.BLUETOOTH_CONNECT)
             return
         }
         launchOperation {
-            val record = records.getOrNull(selected ?: -1) ?: error("重新读取密钥")
+            val record = records.getOrNull(selected ?: -1)
+            if (record == null || !BandConnectionGate.validMac(record.mac)) {
+                status.text = "请先读取并选择AuthKey；请选设备并检查 MAC 格式。"
+                refresh(); return@launchOperation
+            }
             // Only query already-bonded devices. Never call createBond, discovery or BLE scanning.
             val adapter = getSystemService(BluetoothManager::class.java)?.adapter
             if (adapter == null || !adapter.isEnabled || adapter.bondedDevices.none {
                     it.address.equals(record.mac, true) && it.bondState == BluetoothDevice.BOND_BONDED
                 }) {
                 clearKeys()
-                status.text = "未连接：请先手动开启蓝牙并在系统设置配对目标 MAC，再返回重新读取密钥。不会自动配对。"
+                status.text = "需系统配对：请先手动开启蓝牙并在系统设置配对目标 MAC，再返回重新读取并选择AuthKey。不会自动配对。"
                 return@launchOperation
             }
             submitted = false; confirmed = false
             val link = XiaomiClassicSession(AndroidClassicTransport(this), Build.VERSION.SDK_INT, Build.MODEL, "CN")
             session = link
+            var authenticationPhase = "CONNECTING"
             observer = lifecycleScope.launch {
                 link.state.collect { state ->
+                    if (state !in listOf(XiaomiClassicSession.State.FAILED, XiaomiClassicSession.State.CLOSED))
+                        authenticationPhase = state.name
                     sessionState.text = "Classic：$state"
                     refresh()
                 }
@@ -309,13 +343,20 @@ class BandInstallActivity : ComponentActivity() {
             try {
                 link.connectAndAuthenticate(mac, key)
                 status.text = "READY：Classic 已连接并通过认证。尚未安装；只有点击安装并再次确认才发送文件。"
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
                 link.close()
                 if (session === link) {
-                    observer?.cancel(); session = null
-                    sessionState.text = "Classic：CLOSED（认证未完成）"
+                    clearKeys()
+                    observer?.cancel(); observer = null; session = null
+                    if (e is CancellationException && e !is TimeoutCancellationException) {
+                        sessionState.text = "Classic：CLOSED（用户取消或页面离开）"
+                    } else {
+                        val reason = BandConnectionGate.failure(e, authenticationPhase)
+                        sessionState.text = "Classic：CLOSED（$reason）"
+                        status.text = "连接 / 认证失败：$reason。密钥已清空；请重新读取并选择AuthKey。未安装。"
+                    }
                 }
-                throw e
+                if (e is CancellationException && e !is TimeoutCancellationException) throw e
             } finally { key.fill(0) }
         }
     }
@@ -405,7 +446,7 @@ class BandInstallActivity : ComponentActivity() {
         session?.close(); session = null
         rootTask?.cancel(true); rootTask = null
         clearKeys(); busy = false
-        sessionState.text = "Classic：CLOSED"
+        sessionState.text = "Classic：CLOSED（用户取消或页面离开；密钥已清空）"
         refresh()
     }
     override fun onStop() {

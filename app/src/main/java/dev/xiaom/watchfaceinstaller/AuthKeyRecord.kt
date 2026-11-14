@@ -15,6 +15,13 @@ class AuthKeyRecord private constructor(val model: String, val mac: String, priv
         }
     }
 
+    /** Temporary chars only; the block must not retain or persist them. Erased even on failure. */
+    @Synchronized fun <T> withSecret(block: (CharArray) -> T): T {
+        check(!closed) { "认证记录已关闭" }
+        val temporary = key.copyOf()
+        return try { block(temporary) } finally { temporary.fill('\u0000') }
+    }
+
     @Synchronized override fun close() { closed = true; key.fill('\u0000') }
     companion object {
         const val MODEL = "miwear.watch.n67cn"

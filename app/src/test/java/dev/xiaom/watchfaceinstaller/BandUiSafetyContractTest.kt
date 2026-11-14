@@ -46,6 +46,21 @@ class BandUiSafetyContractTest {
         assertTrue(band.contains("window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)"))
         assertFalse(band.contains("BLOCK_REASON"))
     }
+    @Test fun connectionGateAndFixedFailureReasonsAreWired() {
+        assertTrue(band.contains("connect.isEnabled = BandConnectionGate.canConnect"))
+        assertTrue(band.contains("install.isEnabled = BandConnectionGate.canInstall"))
+        assertTrue(band.contains("connectionHint.text = when"))
+        assertTrue(band.contains("BLE MTU / FE95 仅为诊断，不能解锁安装"))
+        val auth = band.substringAfter("private fun authenticate()").substringBefore("private fun confirmInstall()")
+        assertTrue(auth.indexOf("connectionBlockReason()") < auth.indexOf("permission.launch"))
+        assertTrue(auth.indexOf("BandConnectionGate.validMac(record.mac)") < auth.indexOf("copyKeyBytes()"))
+        assertTrue(auth.indexOf("adapter.bondedDevices") < auth.indexOf("copyKeyBytes()"))
+        val failure = auth.substringAfter("catch (e: Exception)")
+        assertTrue(failure.contains("clearKeys()"))
+        assertTrue(failure.contains("BandConnectionGate.failure(e, authenticationPhase)"))
+        assertFalse(failure.contains("e.message"))
+        assertTrue(band.substringAfter("private fun stopFlow()").contains("用户取消或页面离开"))
+    }
     @Test fun mainEntryStillValidatesPrivateHash() {
         val entry = source("MainActivity").substringAfter("private fun openBandEditor()").substringBefore("private fun rereadCurrentId()")
         assertTrue(entry.contains("WorkingCopyResult.privateFile(filesDir"))

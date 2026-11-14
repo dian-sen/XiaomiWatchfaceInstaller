@@ -1,5 +1,12 @@
 package dev.xiaom.watchfaceinstaller
 
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.PersistableBundle
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -13,8 +20,13 @@ import androidx.compose.ui.unit.dp
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
-/** Secrets never leave this Activity, saved state, clipboard, Intent and preferences are unused. */
+/** Explicit, warned clipboard export only. No saved state, Intent, preferences or logs for secrets. */
 class AuthKeyActivity : ComponentActivity() {
+    private val handler = Handler(Looper.getMainLooper())
+    private val clipboardLease = SecretClipboardLease()
+    private var plaintext by mutableStateOf<CharArray?>(null)
+    private var confirmation: AlertDialog? = null
+    private val conceal = Runnable { hidePlaintext() }
     private val lock = Any()
     private val executor = Executors.newSingleThreadExecutor()
     private var operation: Future<*>? = null
@@ -35,7 +47,7 @@ class AuthKeyActivity : ComponentActivity() {
                     item {
                         Text("设备认证密钥（Root）", style = MaterialTheme.typography.headlineSmall)
                         Text("点击后通过本应用 su 只读取得小米运动健康数据库的临时私有快照。只提取目标型号的 encrypt_key，不读取其他认证字段。不会修改 Root 策略或连接蓝牙。")
-                        Text("密钥仅保留在本页内存，以掩码显示；不复制、不保存、不传递给其他页面。离开页面即清空，返回需要重新读取。")
+                        Text("密钥默认仅在本页内存以掩码显示，不保存、不传递给其他页面。可二次确认后短时显示并复制明文；离开即隐藏并清空，返回需要重新读取。")
                         Button(onClick = ::readKey, enabled = !busy) { Text(if (busy) "正在安全读取…" else "明确授权并读取 AuthKey") }
                         Text(status)
                     }
@@ -44,7 +56,11 @@ class AuthKeyActivity : ComponentActivity() {
                             Text("${if (selected == index) "已选择 · " else "选择 · "}${choices[index]}")
                         }
                     }
-                    if (selected != null) item { Text("AuthKey：••••••••••••••••••••••••••••••••（32 位十六进制）") }
+                    if (selected != null) item {
+                        Text(AuthKeyPrivacy.MASK)
+                        Button(onClick = ::confirmPlaintext, enabled = !busy) { Text("显示并复制明文 AuthKey") }
+                        plaintext?.let { Text("AuthKey：${String(it)}（最多 30 秒）") }
+                    }
                     item { OutlinedButton(onClick = { finish() }) { Text("清空并返回") } }
                 }
             }
@@ -57,7 +73,60 @@ class AuthKeyActivity : ComponentActivity() {
         records.forEach { it.close() }; records = emptyList()
     }
 
+    private fun hidePlaintext() {
+        handler.removeCallbacks(conceal)
+        plaintext?.fill('\u0000'); plaintext = null
+        val cleared = clipboardLease.clearIfOwned(
+            read = {
+                val clip = getSystemService(ClipboardManager::class.java)?.primaryClip
+                if (clip?.itemCount == 1) clip.getItemAt(0).text else null
+            },
+            clear = { getSystemService(ClipboardManager::class.java)?.let {
+                if (Build.VERSION.SDK_INT >= 28) it.clearPrimaryClip()
+                else it.setPrimaryClip(ClipData.newPlainText("", ""))
+            } }
+        )
+        if (!cleared) status = "明文已隐藏；系统拒绝检查或清理剪贴板，请手动清除。"
+    }
+
+    private fun confirmPlaintext() {
+        if (!foreground || busy || confirmation != null || selected == null) return
+        val index = selected ?: return
+        val d = AlertDialog.Builder(this).setTitle("确认显示并复制敏感 AuthKey？")
+            .setMessage(AuthKeyPrivacy.WARNING).setNegativeButton("取消", null)
+            .setPositiveButton("确认风险并复制") { _, _ ->
+                if (foreground && selected == index) copyPlaintext(index)
+            }.create()
+        confirmation = d
+        d.setOnDismissListener { if (confirmation === d) confirmation = null }
+        d.show()
+    }
+
+    private fun copyPlaintext(index: Int) {
+        hidePlaintext()
+        try {
+            val record = records.getOrNull(index) ?: error("记录已清空")
+            record.withSecret { temporary ->
+                val clipboard = getSystemService(ClipboardManager::class.java) ?: error("剪贴板不可用")
+                val clip = ClipData.newPlainText("敏感 AuthKey", String(temporary))
+                // Stable platform key, also understood by Android 12 clipboard UIs.
+                if (Build.VERSION.SDK_INT >= 24) clip.description.extras = PersistableBundle().apply {
+                    putBoolean("android.content.extra.IS_SENSITIVE", true)
+                }
+                clipboardLease.remember(temporary)
+                clipboard.setPrimaryClip(clip)
+                plaintext = temporary.copyOf()
+            }
+            handler.postDelayed(conceal, AuthKeyPrivacy.TIMEOUT_MS)
+            status = "已复制敏感 AuthKey；最多显示 30 秒。不得分享；离开本页即隐藏并尝试清理本次剪贴板。"
+        } catch (_: Exception) {
+            hidePlaintext()
+            status = "复制失败：剪贴板不可用或系统拒绝。明文已隐藏；如系统已接收部分操作，请手动检查并清除剪贴板。"
+        }
+    }
+
     private fun readKey() {
+        hidePlaintext()
         val request = synchronized(lock) {
             if (!foreground || busy) return
             clearLocked(); ++epoch
@@ -95,12 +164,15 @@ class AuthKeyActivity : ComponentActivity() {
     private fun choose(index: Int) {
         synchronized(lock) {
             if (!foreground || index !in records.indices) return
+            hidePlaintext()
             selected = index
             status = "已读取可用于后续认证，但未连接未安装。当前版本不会将密钥传给 BLE 页面。"
         }
     }
 
     override fun onStop() {
+        confirmation?.dismiss(); confirmation = null
+        hidePlaintext()
         synchronized(lock) { foreground = false; ++epoch; clearLocked() }
         operation?.cancel(true); operation = null
         choices = emptyList(); selected = null; busy = false
