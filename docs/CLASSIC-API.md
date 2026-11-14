@@ -35,3 +35,13 @@ try {
 ```
 
 Do not construct the transport/session until the explicit user test action. Do not save the key in ViewModel/SavedState/Bundle. RootAuthKeySource is owned by the UI flow, not called by this library. Do not read the database just to render the page.
+
+## Connection failure snapshots
+
+Use `session.failure` (`ClassicFailure?`) and `session.phase` (`ClassicPhase`) in
+catch handlers, not the last value delivered to a UI observer. These snapshots
+are set synchronously before FAILED and retained after `close()` / CLOSED.
+Original exceptions still propagate, with causes intact. Render/copy only
+`failure.diagnostic()`, never `Throwable.message`, `toString()` or stack traces.
+See `CLASSIC-CONNECTION-AUDIT.md` for pinned socket/SDP source evidence, passive
+bonded-cache UI and the bounded sanitized report format.

@@ -31,9 +31,12 @@ class BandUiSafetyContractTest {
     @Test fun secretsAreNotSavedAndCleanupIsLifecycleBound() {
         val save = band.substringAfter("override fun onSaveInstanceState").substringBefore("private suspend fun renderSummary")
         assertFalse(save.contains("records")); assertFalse(save.contains("key"))
-        assertFalse(band.contains("putByteArray")); assertFalse(band.contains("ClipboardManager"))
+        assertFalse(band.contains("putByteArray"))
+        assertTrue(band.contains("ClipData.newPlainText(\"Classic diagnostic\", diagnosticText())"))
+        val diagnostic = band.substringAfter("private fun diagnosticText()").substringBefore("private fun rememberFailure")
+        assertFalse(diagnostic.contains("records")); assertFalse(diagnostic.contains("copyKeyBytes"))
         val stop = band.substringAfter("private fun stopFlow()").substringBefore("override fun onDestroy()")
-        for (required in listOf("operation?.cancel()", "session?.close()", "rootTask?.cancel(true)", "clearKeys()", "override fun onStop()", "stopFlow()"))
+        for (required in listOf("operation?.cancel()", "it.close()", "rootTask?.cancel(true)", "clearKeys()", "override fun onStop()", "stopFlow()"))
             assertTrue(required, stop.contains(required))
         assertTrue(band.contains("records.forEach { it.close() }"))
     }
@@ -57,9 +60,24 @@ class BandUiSafetyContractTest {
         assertTrue(auth.indexOf("adapter.bondedDevices") < auth.indexOf("copyKeyBytes()"))
         val failure = auth.substringAfter("catch (e: Exception)")
         assertTrue(failure.contains("clearKeys()"))
-        assertTrue(failure.contains("BandConnectionGate.failure(e, authenticationPhase)"))
+        assertTrue(failure.contains("BandConnectionGate.failure(report)"))
         assertFalse(failure.contains("e.message"))
         assertTrue(band.substringAfter("private fun stopFlow()").contains("用户取消或页面离开"))
+    }
+    @Test fun passiveBondedDiagnosticsNeverStartBluetoothCommunication() {
+        val passive = band.substringAfter("private fun showBondedSelection()").substringBefore("private fun connectionBlockReason()")
+        assertTrue(passive.contains("adapter?.bondedDevices"))
+        assertTrue(passive.contains("device.uuids"))
+        for (forbidden in listOf(".fetchUuidsWithSdp(", ".startDiscovery(", ".createBond(", ".connect(", "permission.launch("))
+            assertFalse(forbidden, passive.contains(forbidden))
+        val transport = source("classic/AndroidClassicTransport")
+        assertTrue(transport.contains("SERVICE_UUID: UUID = ClassicProfile.SERVICE_UUID"))
+        assertTrue(transport.contains("device.createRfcommSocketToServiceRecord(SERVICE_UUID)"))
+        assertTrue(transport.contains("BluetoothDevice.BOND_BONDED"))
+        for (forbidden in listOf("createInsecure", "getMethod(", "fetchUuidsWithSdp(", "startDiscovery(", "createBond("))
+            assertFalse(forbidden, transport.contains(forbidden))
+        assertFalse(band.contains("authenticationPhase"))
+        assertTrue(band.contains("link.failure ?: ClassicFailure.capture(link.phase, error)"))
     }
     @Test fun mainEntryStillValidatesPrivateHash() {
         val entry = source("MainActivity").substringAfter("private fun openBandEditor()").substringBefore("private fun rereadCurrentId()")

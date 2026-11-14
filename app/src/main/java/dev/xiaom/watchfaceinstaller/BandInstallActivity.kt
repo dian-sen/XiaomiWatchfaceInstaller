@@ -41,6 +41,19 @@ class BandInstallActivity : ComponentActivity() {
     private lateinit var summary: TextView
     private lateinit var connectionHint: TextView
     private lateinit var sessionState: TextView
+    private lateinit var bondedInfo: TextView
+    private var deviceDiagnostic = "selected-bonded-device=unknown"
+    private var lastDiagnostic = "尚未尝试连接；无失败诊断。"
+    private var lastClassicPhase = ClassicPhase.IDLE
+    private fun diagnosticText() = "Classic diagnostic (redacted)\n" +
+        "service=${ClassicProfile.SERVICE_UUID} secure=true SDP=UUID\n" +
+        "$deviceDiagnostic\n$lastDiagnostic\n无 key、完整 MAC、BIN 内容；不扫描、不自动重连。"
+    private fun rememberFailure(link: XiaomiClassicSession, error: Throwable): ClassicFailure {
+        val report = link.failure ?: ClassicFailure.capture(link.phase, error)
+        lastClassicPhase = report.phase
+        lastDiagnostic = report.diagnostic()
+        return report
+    }
     private lateinit var choices: LinearLayout
     private lateinit var progress: ProgressBar
     private lateinit var edit: Button
@@ -106,6 +119,12 @@ class BandInstallActivity : ComponentActivity() {
         summary = label("正在验证私有工作副本…").apply { setTextIsSelectable(true) }
         status = label("未读取密钥，未连接，未安装。")
         sessionState = label("Classic：IDLE（尚未连接）")
+        bondedInfo = label("所选系统配对设备：尚未选择。仅查询系统缓存，不发起发现 / SDP 刷新。")
+        button("复制脱敏诊断") {
+            getSystemService(android.content.ClipboardManager::class.java)
+                .setPrimaryClip(ClipData.newPlainText("Classic diagnostic", diagnosticText()))
+            Toast.makeText(this, "已复制脱敏诊断（无密钥、完整 MAC 或 BIN 内容）", Toast.LENGTH_SHORT).show()
+        }
         connectionHint = label("请先读取并选择AuthKey")
         progress = ProgressBar(this).also { content.addView(it) }
         newId = EditText(this).apply {
@@ -157,6 +176,7 @@ class BandInstallActivity : ComponentActivity() {
         back.isEnabled = enabled && workFile != null
         newId.isEnabled = edit.isEnabled
         rootRead.isEnabled = enabled && session == null && workFile != null
+        showBondedSelection()
         val blocked = connectionBlockReason()
         connectionHint.text = when {
             session?.state?.value == XiaomiClassicSession.State.READY -> "Classic 认证就绪；可单独确认安装。BLE 诊断成功不代表认证成功。"
@@ -170,6 +190,41 @@ class BandInstallActivity : ComponentActivity() {
         bleScan.isEnabled = enabled && session == null
         for (i in 0 until bleDevices.childCount) bleDevices.getChildAt(i).isEnabled = enabled && session == null
         progress.visibility = if (busy) View.VISIBLE else View.GONE
+    }
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun showBondedSelection() {
+        val mac = records.getOrNull(selected ?: -1)?.mac ?: return
+        if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(this,
+                Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            bondedInfo.text = "所选配对设备：尚无读取权限；未请求权限或发现。"
+            deviceDiagnostic = "selected-bonded-device=permission-unavailable"
+            return
+        }
+        try {
+            val device = getSystemService(BluetoothManager::class.java)?.adapter?.bondedDevices
+                ?.firstOrNull { it.address.equals(mac, true) }
+            if (device == null) {
+                bondedInfo.text = "所选 MAC 不在系统配对列表；无 SPP 服务线索。未扫描 / 发现。"
+                deviceDiagnostic = "selected-bonded-device=absent; SPP=no-cached-evidence"
+                return
+            }
+            val type = when (device.type) {
+                BluetoothDevice.DEVICE_TYPE_CLASSIC -> "CLASSIC"
+                BluetoothDevice.DEVICE_TYPE_LE -> "LE"
+                BluetoothDevice.DEVICE_TYPE_DUAL -> "DUAL"
+                else -> "UNKNOWN"
+            }
+            // BluetoothDevice.getUuids returns the local cache; never call fetchUuidsWithSdp.
+            val uuids = device.uuids?.map { it.uuid }?.take(32).orEmpty()
+            val spp = ClassicProfile.SERVICE_UUID in uuids
+            bondedInfo.text = "系统配对列表所选设备：${ClassicRedaction.text(device.name ?: "未命名")}\n" +
+                "type=$type · BONDED\n已缓存服务 UUID（非本次发现 / 广播实测）：${uuids.joinToString().ifEmpty { "未知 / 空" }}\n" +
+                if (spp) "有标准 SPP 服务缓存线索，不保证当前可连接。" else "无 SPP 服务线索；缓存可能不完整，不能据此断言设备不支持。未发起发现。"
+            deviceDiagnostic = "selected-bonded-device=BONDED; type=$type; cached-SPP=$spp; uuid-count=${uuids.size}"
+        } catch (_: SecurityException) {
+            bondedInfo.text = "配对设备缓存读取权限不可用；未发起发现。"
+            deviceDiagnostic = "selected-bonded-device=permission-unavailable"
+        }
     }
     private fun connectionBlockReason(): String? {
         val record = records.getOrNull(selected ?: -1)
@@ -198,7 +253,7 @@ class BandInstallActivity : ComponentActivity() {
             catch (_: Exception) {
                 if (foreground && epoch == request) {
                     clearKeys()
-                    session?.close(); session = null
+                    session?.let { lastClassicPhase = it.phase; it.close() }; session = null
                     observer?.cancel(); observer = null
                     sessionState.text = "Classic：CLOSED（操作失败，连接已关闭）"
                 }
@@ -328,12 +383,10 @@ class BandInstallActivity : ComponentActivity() {
             submitted = false; confirmed = false
             val link = XiaomiClassicSession(AndroidClassicTransport(this), Build.VERSION.SDK_INT, Build.MODEL, "CN")
             session = link
-            var authenticationPhase = "CONNECTING"
+            lastDiagnostic = "连接尝试进行中"
             observer = lifecycleScope.launch {
                 link.state.collect { state ->
-                    if (state !in listOf(XiaomiClassicSession.State.FAILED, XiaomiClassicSession.State.CLOSED))
-                        authenticationPhase = state.name
-                    sessionState.text = "Classic：$state"
+                    sessionState.text = "Classic：$state · ${link.phase}"
                     refresh()
                 }
             }
@@ -344,16 +397,17 @@ class BandInstallActivity : ComponentActivity() {
                 link.connectAndAuthenticate(mac, key)
                 status.text = "READY：Classic 已连接并通过认证。尚未安装；只有点击安装并再次确认才发送文件。"
             } catch (e: Exception) {
+                val report = rememberFailure(link, e)
                 link.close()
                 if (session === link) {
                     clearKeys()
                     observer?.cancel(); observer = null; session = null
                     if (e is CancellationException && e !is TimeoutCancellationException) {
-                        sessionState.text = "Classic：CLOSED（用户取消或页面离开）"
+                        sessionState.text = "Classic：CLOSED · ${report.phase}（用户取消或页面离开）"
                     } else {
-                        val reason = BandConnectionGate.failure(e, authenticationPhase)
-                        sessionState.text = "Classic：CLOSED（$reason）"
-                        status.text = "连接 / 认证失败：$reason。密钥已清空；请重新读取并选择AuthKey。未安装。"
+                        val reason = BandConnectionGate.failure(report)
+                        sessionState.text = "Classic：FAILED → CLOSED · ${report.phase}"
+                        status.text = "连接 / 认证失败：$reason\n已实际尝试连接；密钥随后按安全策略清空（按钮灰色不是此前未选 key）。再次尝试需重新读取；未安装。"
                     }
                 }
                 if (e is CancellationException && e !is TimeoutCancellationException) throw e
@@ -383,11 +437,16 @@ class BandInstallActivity : ComponentActivity() {
                     confirmed = result.activeConfirmed
                     status.text = if (confirmed) "安装成功：设备已确认 ID ${result.id} 已安装并激活。"
                     else "设备未确认激活，结果未知；勿盲目重刷。"
+                } catch (e: Exception) {
+                    val report = rememberFailure(link, e)
+                    status.text = "设备结果未知；勿盲目重刷。\n${BandConnectionGate.failure(report)}"
+                    if (e is CancellationException && e !is TimeoutCancellationException) throw e
                 } finally {
+                    lastClassicPhase = link.phase
                     link.close()
                     if (session === link) {
                         observer?.cancel(); session = null
-                        sessionState.text = "Classic：CLOSED"
+                        sessionState.text = "Classic：CLOSED · $lastClassicPhase"
                     }
                 }
             }
@@ -443,10 +502,10 @@ class BandInstallActivity : ComponentActivity() {
         dialog?.dismiss(); dialog = null
         operation?.cancel(); operation = null
         observer?.cancel(); observer = null
-        session?.close(); session = null
+        session?.let { lastClassicPhase = it.phase; it.close() }; session = null
         rootTask?.cancel(true); rootTask = null
         clearKeys(); busy = false
-        sessionState.text = "Classic：CLOSED（用户取消或页面离开；密钥已清空）"
+        sessionState.text = "Classic：CLOSED · $lastClassicPhase（用户取消或页面离开；密钥已清空）"
         refresh()
     }
     override fun onStop() {

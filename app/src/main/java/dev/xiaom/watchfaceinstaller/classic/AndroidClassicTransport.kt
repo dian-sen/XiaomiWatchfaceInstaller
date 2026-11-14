@@ -24,7 +24,7 @@ class AndroidClassicTransport(context: Context) : ClassicTransport {
         Thread(task, "xiaomi-classic-io").apply { isDaemon = true }
     }
     companion object {
-        val SERVICE_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb")
+        val SERVICE_UUID: UUID = ClassicProfile.SERVICE_UUID
     }
     private suspend fun <T> io(action: () -> T): T = suspendCancellableCoroutine { continuation ->
         continuation.invokeOnCancellation { close() }
@@ -37,17 +37,21 @@ class AndroidClassicTransport(context: Context) : ClassicTransport {
             }
         } catch (e: Exception) { if (continuation.isActive) continuation.resumeWithException(e) }
     }
-    override suspend fun connect(mac: String) = io {
+    override suspend fun connect(mac: String): Unit = io {
+        var phase = ClassicPhase.BONDED_CHECK
+        try {
         require(mac.matches(Regex("(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"))) { "无效设备地址" }
         val adapter = checkNotNull(manager?.adapter) { "设备不支持蓝牙" }
         check(adapter.isEnabled) { "请先开启蓝牙" }
         val device = adapter.getRemoteDevice(mac)
         check(device.bondState == BluetoothDevice.BOND_BONDED) { "请先在系统中完成配对；本工具不会自动配对" }
+        phase = ClassicPhase.SOCKET_CONNECT
         val created = synchronized(lock) {
             check(!closed && socket == null) { "连接已关闭或已使用" }
             device.createRfcommSocketToServiceRecord(SERVICE_UUID).also { socket = it }
         }
         created.connect()
+        } catch (e: Exception) { throw ClassicTransportFailure(phase, e) }
     }
     override suspend fun read(): ByteArray = io {
         val stream = synchronized(lock) { check(!closed); checkNotNull(socket).inputStream }

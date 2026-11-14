@@ -13,12 +13,18 @@ object BandConnectionGate {
     }
     fun canConnect(available: Boolean, hasSession: Boolean, reason: String?) = available && !hasSession && reason == null
     fun canInstall(available: Boolean, hasFile: Boolean, state: String?) = available && hasFile && state == "READY"
-    fun failure(error: Throwable, phase: String): String = when {
-        error is SecurityException -> "蓝牙连接权限被拒绝或已撤销"
-        error is java.io.IOException -> "Classic 连接失败或已断开，请检查系统配对与设备距离"
-        error.javaClass.simpleName == "TimeoutCancellationException" -> "设备响应超时，未完成认证"
-        phase == "CONNECTING" || phase == "IDLE" -> "Classic 连接失败，未建立安全通道"
-        phase == "NEGOTIATING" -> "Classic 协议协商失败，设备响应或协议版本不兼容"
-        else -> "认证校验失败，密钥或设备认证响应未通过校验"
+    fun failure(report: dev.xiaom.watchfaceinstaller.classic.ClassicFailure): String {
+        val phase = report.phase
+        val detail = when (phase) {
+            dev.xiaom.watchfaceinstaller.classic.ClassicPhase.BONDED_CHECK -> "系统配对或蓝牙权限检查失败"
+            dev.xiaom.watchfaceinstaller.classic.ClassicPhase.SOCKET_CONNECT -> "安全 RFCOMM / SDP 连接失败或已断开；尚未进行密钥认证"
+            dev.xiaom.watchfaceinstaller.classic.ClassicPhase.VERSION_WRITE -> "SPP 版本请求写入失败"
+            dev.xiaom.watchfaceinstaller.classic.ClassicPhase.VERSION_READ -> "SPP 版本响应读取失败；不是密钥选择错误"
+            dev.xiaom.watchfaceinstaller.classic.ClassicPhase.AUTH_NONCE -> "认证随机数交换失败"
+            dev.xiaom.watchfaceinstaller.classic.ClassicPhase.AUTH_PROOF -> "认证证明交换或校验失败"
+            dev.xiaom.watchfaceinstaller.classic.ClassicPhase.LIST_CONFIRM -> "加密列表往返确认失败"
+            else -> "Classic 协议操作失败"
+        }
+        return "$phase：$detail\n${report.diagnostic()}"
     }
 }

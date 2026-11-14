@@ -26,14 +26,10 @@ class BandConnectionGateTest {
         assertFalse(BandConnectionGate.canInstall(false, true, "READY"))
         assertFalse(BandConnectionGate.canInstall(true, false, "READY"))
     }
-    @Test fun reasonsNeverEchoExceptionMessages() {
-        val untrusted = "sensitive diagnostic must not escape"
-        for (phase in listOf("CONNECTING", "NEGOTIATING", "AUTHENTICATING")) {
-            val reason = BandConnectionGate.failure(IllegalArgumentException(untrusted), phase)
-            assertFalse(reason.contains(untrusted))
-            assertTrue(reason.isNotBlank())
-        }
-        assertTrue(BandConnectionGate.failure(SecurityException(untrusted), "CONNECTING").contains("权限"))
-        assertTrue(BandConnectionGate.failure(java.io.IOException(untrusted), "CONNECTING").contains("断开"))
+    @Test fun stagesDoNotCollapseIoIntoConnectionFailure() {
+        val report = dev.xiaom.watchfaceinstaller.classic.ClassicFailure.capture(
+            dev.xiaom.watchfaceinstaller.classic.ClassicPhase.AUTH_PROOF, java.io.IOException("read failed"))
+        assertTrue(BandConnectionGate.failure(report).contains("AUTH_PROOF"))
+        assertFalse(BandConnectionGate.failure(report).contains("安全 RFCOMM"))
     }
 }

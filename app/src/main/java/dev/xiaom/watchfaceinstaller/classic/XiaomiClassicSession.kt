@@ -31,6 +31,12 @@ class XiaomiClassicSession(
     data class InstallResult(val id: String, val protocolVersion: Int, val activeConfirmed: Boolean)
     private val mutableState = MutableStateFlow(State.IDLE)
     val state: StateFlow<State> = mutableState.asStateFlow()
+    @Volatile private var lastPhase = ClassicPhase.IDLE
+    @Volatile private var lastFailure: ClassicFailure? = null
+    /** Synchronous snapshots: independent of StateFlow collector scheduling; retained on close. */
+    val phase: ClassicPhase get() = lastPhase
+    val failure: ClassicFailure? get() = lastFailure
+    private fun stage(value: ClassicPhase) { lastPhase = value }
     private val operation = Mutex()
     private val stateLock = Any()
     private val stopped = AtomicBoolean(false)
@@ -188,26 +194,32 @@ class XiaomiClassicSession(
                 }
                 key.fill(0)
                 transition(State.CONNECTING)
+                stage(ClassicPhase.SOCKET_CONNECT)
                 withTimeout(responseTimeoutMs) { transport.connect(mac) }
                 scope.launch {
                     try { while (isActive) incoming.send(transport.read()) }
                     catch (e: Throwable) { incoming.close(e) }
                 }
                 transition(State.NEGOTIATING)
+                stage(ClassicPhase.VERSION_WRITE)
                 write(XiaomiClassicWire.versionRequest)
+                stage(ClassicPhase.VERSION_READ)
                 val answer = withTimeout(responseTimeoutMs) { frame() }
                 require(answer.channel == 0 && answer.kind == 0 && answer.payload.isNotEmpty()) { "未收到明确的 SPP 版本；不会超时猜测回退" }
                 version = answer.payload[0].toInt() and 255
                 require(version in 1..2) { "设备 SPP 版本 $version 未支持；不会回退" }
                 if (version == 2) {
+                    stage(ClassicPhase.SESSION_CONFIG)
                     write(XiaomiClassicWire.sessionRequest)
                     val config = withTimeout(responseTimeoutMs) { frame() }
                     require(config.kind == 2)
                     configureV2(config.payload)
                 }
                 transition(State.AUTHENTICATING)
+                stage(ClassicPhase.AUTH_NONCE)
                 send(checkNotNull(crypto).hello(), auth = true)
                 val verify = nested(nested(response(1, 26), 3), 31)
+                stage(ClassicPhase.AUTH_PROOF)
                 val confirm = checkNotNull(crypto).confirm(P.one(verify, 1, 2).bytes, P.one(verify, 2, 2).bytes,
                     P.phoneInfo(phoneApi, phoneModel, region))
                 send(confirm, auth = true)
@@ -218,11 +230,13 @@ class XiaomiClassicSession(
                 // session by a successful watchface-list round trip before reporting READY.
                 authenticated = true
                 listWatchfaces()
+                stage(ClassicPhase.READY)
                 transition(State.READY)
             }
         } finally { key.fill(0) }
     }
     private suspend fun listWatchfaces(): Map<String, Boolean> {
+        stage(ClassicPhase.LIST_CONFIRM)
         // Discard old unsolicited lists before issuing a new request. Never treat cached list as proof.
         commands.removeAll { number(it, 1) == 4L && optional(it, 2, 0) == 0L }
         send(P.command(4, 0))
@@ -254,8 +268,9 @@ class XiaomiClassicSession(
                 out.toByteArray()
             }
             val id = WatchfaceIdEditor.validatedId(bytes)
-            transition(State.PREPARING)
+            stage(ClassicPhase.PREPARE); transition(State.PREPARING)
             require(id !in listWatchfaces()) { "设备已存在同 ID 表盘；拒绝覆盖，请使用新的 ID 副本" }
+            stage(ClassicPhase.PREPARE)
             send(P.installStart(id, bytes.size))
             require(optional(nested(response(4, 4), 6), 5, 0) == 0L) { "设备拒绝准备安装" }
             send(P.uploadStart(bytes))
@@ -267,16 +282,17 @@ class XiaomiClassicSession(
             val chunkSize = optional(ack, 5, 2048)
             require(chunkSize in 32..(if (version == 2) maximumV2Frame - 10 else 65528).toLong()) { "设备上传分片长度不支持" }
             val parts = XiaomiFrames.uploadParts(bytes, chunkSize.toInt())
-            transition(State.UPLOADING)
+            stage(ClassicPhase.UPLOAD); transition(State.UPLOADING)
             parts.forEachIndexed { index, part ->
                 send(part, data = true)
                 onProgress(Progress("上传中（尚未确认安装）", index + 1, parts.size))
             }
-            transition(State.VERIFYING)
+            stage(ClassicPhase.VERIFY); transition(State.VERIFYING)
             onProgress(Progress("等待设备安装并刷新列表", 0, 1))
             var present = false
             repeat(5) { if (!present) { delay(500); present = id in listWatchfaces() } }
             require(present) { "上传结束但设备列表未确认新表盘；结果未知，禁止自动重刷" }
+            stage(ClassicPhase.ACTIVATE)
             send(P.command(4, 1, 6, P.text(2, id)))
             require(number(nested(response(4, 1), 6), 4) == 1L) { "设备未确认激活；不能报告成功" }
             var active = false
@@ -291,7 +307,11 @@ class XiaomiClassicSession(
         check(operation.tryLock()) { "已有操作正在执行" }
         try { return withContext(Dispatchers.IO) { block() } }
         catch (e: Throwable) {
-            synchronized(stateLock) { if (state.value != State.CLOSED) mutableState.value = State.FAILED }
+            synchronized(stateLock) {
+                if (lastFailure == null) lastFailure = ClassicFailure.capture(lastPhase, e)
+                lastPhase = checkNotNull(lastFailure).phase
+                if (state.value != State.CLOSED) mutableState.value = State.FAILED
+            }
             stop()
             throw e
         } finally { operation.unlock() }

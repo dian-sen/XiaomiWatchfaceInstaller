@@ -158,6 +158,46 @@ class XiaomiClassicSessionTest {
         assertEquals(0, peer.prepareCount)
     }
 
+    @Test fun fakeTransportFailuresHaveSynchronousRetainedStagesWithoutObserver() = runBlocking {
+        for ((writeNumber, expected) in listOf(1 to ClassicPhase.VERSION_WRITE,
+                2 to ClassicPhase.AUTH_NONCE, 3 to ClassicPhase.AUTH_PROOF, 4 to ClassicPhase.LIST_CONFIRM)) {
+            val peer = Peer(1)
+            var writes = 0
+            val io = java.io.IOException("socket closed 12:34:56:78:9A:BC key=000102030405060708090a0b0c0d0e0f")
+            val transport = object : ClassicTransport by peer {
+                override suspend fun write(bytes: ByteArray) {
+                    if (++writes == writeNumber) throw io
+                    peer.write(bytes)
+                }
+            }
+            val link = XiaomiClassicSession(transport, responseTimeoutMs = 1000)
+            try { link.connectAndAuthenticate(mac, key); fail() } catch (e: java.io.IOException) { assertSame(io, e) }
+            assertEquals(expected, link.failure!!.phase)
+            assertEquals(expected, link.phase)
+            val snapshot = link.failure
+            assertEquals(XiaomiClassicSession.State.FAILED, link.state.value)
+            link.close()
+            assertSame(snapshot, link.failure)
+            assertEquals(expected, link.phase)
+            assertFalse(snapshot!!.diagnostic().contains(mac))
+            assertFalse(snapshot.diagnostic().contains("000102030405060708090a0b0c0d0e0f"))
+        }
+        for (expected in listOf(ClassicPhase.SOCKET_CONNECT, ClassicPhase.BONDED_CHECK, ClassicPhase.VERSION_READ)) {
+            val peer = Peer(1)
+            val transport = object : ClassicTransport by peer {
+                override suspend fun connect(mac: String) {
+                    if (expected == ClassicPhase.SOCKET_CONNECT) throw java.io.IOException("connect refused")
+                    if (expected == ClassicPhase.BONDED_CHECK) throw ClassicTransportFailure(expected, SecurityException("denied"))
+                }
+                override suspend fun read(): ByteArray { throw java.io.EOFException("read failed, ret: -1") }
+            }
+            val link = XiaomiClassicSession(transport, responseTimeoutMs = 500)
+            try { link.connectAndAuthenticate(mac, key); fail() } catch (_: Exception) { }
+            assertEquals(expected, link.failure!!.phase)
+            link.close(); assertEquals(expected, link.phase)
+        }
+    }
+
     /** Scripted watch; encrypted command replies and upload envelope are independently verified. */
     private inner class Peer(val version: Int) : ClassicTransport {
         private val raw = Channel<ByteArray>(Channel.UNLIMITED)

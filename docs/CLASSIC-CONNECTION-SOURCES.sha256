@@ -1,0 +1,5 @@
+f758c51c048afab45d34db69f90032b55da6a8212f771553dff87c77f72a5503  app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/xiaomi/XiaomiUuids.java
+fab54e0effb9329d96e52c977b135ff9a7297976293672df9f7f4eab5f8b9e73  app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/xiaomi/XiaomiSppSupport.java
+b6619c29affa20613453a1503bab02068e1061d77672cedd7d855be73c71167e  app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/btbr/AbstractBTBRDeviceSupport.java
+d8d9f452b8c05c10c871969e8174f7df098ab50800bee43eb1ae210a6f280293  app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/btbr/BtBRQueue.java
+7323dac827a8889ed79bfe2f6b8f3515fcf7d1f147c410bde170be709a72f90b  app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/btle/AbstractBTLEDeviceSupport.java

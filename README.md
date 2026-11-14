@@ -145,3 +145,9 @@ XML 读取固定白名单路径、只读、512 KiB 上限；禁止 DTD 和外部
 AuthKey 默认仍只显示掩码。用户必须二次确认风险后，才可短时显示并复制；页面最多保留30秒，离开页面会隐藏并尝试清理本次剪贴板内容。Android剪贴板/输入法可能已经取得副本，不能保证平台级擦除；不要分享或粘贴到不可信应用。
 
 连接页面现在区分：未读取/未选择AuthKey、未选择设备、MAC无效、未系统配对、权限不足、连接断开、协议协商失败和认证失败。截图中“Classic CLOSED”且按钮灰色的情况通常表示尚未选择AuthKey记录，或会话已退出；BLE MTU/FE95诊断不等于Classic认证成功。
+
+## 0.7.2 连接失败的精确脱敏诊断
+
+修复失败文案丢失阶段的问题：失败发生时同步保存 SOCKET_CONNECT、VERSION_READ、AUTH_NONCE、AUTH_PROOF、LIST_CONFIRM 等阶段，断连后仍可查看并复制脱敏因果链。不再把所有 IOException 都称为距离/配对失败。显示所选系统配对设备类型与缓存SPP UUID线索，不主动执行SDP发现或额外通信。
+
+已核对官方固定源码：标准SPP UUID和secure RFCOMM与本实现一致，无证据支持随意改UUID、insecure或强制channel1。因此此版本是可定位失败的诊断改进，**不是已经解决真机连接失败的声明**。见 docs/CLASSIC-CONNECTION-AUDIT.md。失败后密钥清除、按钮灰色不表示之前没有选过密钥。复制诊断不包含密钥、完整MAC或BIN内容。
