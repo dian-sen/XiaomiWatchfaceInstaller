@@ -385,6 +385,12 @@ class BandInstallActivity : ComponentActivity() {
                 status.text = "请先读取并选择AuthKey；请选设备并检查 MAC 格式。"
                 refresh(); return@launchOperation
             }
+            // Recheck inside the async block too: permissions can be revoked after the click.
+            if (Build.VERSION.SDK_INT >= 31 &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                status.text = "蓝牙连接权限已撤销；未连接。"
+                return@launchOperation
+            }
             // Only query already-bonded devices. Transport stops existing local discovery; never starts it.
             val adapter = getSystemService(BluetoothManager::class.java)?.adapter
             if (adapter == null || !adapter.isEnabled || adapter.bondedDevices.none {
