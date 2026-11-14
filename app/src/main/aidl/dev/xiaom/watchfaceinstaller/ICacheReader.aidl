@@ -3,7 +3,8 @@ package dev.xiaom.watchfaceinstaller;
 import android.os.ParcelFileDescriptor;
 
 interface ICacheReader {
-    String scan();
-    ParcelFileDescriptor openReadOnly(String path);
-    void destroy();
+    String scan() = 0;
+    ParcelFileDescriptor openReadOnly(String path) = 1;
+    // Shizuku sends transaction 16777115 (AIDL adds FIRST_CALL_TRANSACTION).
+    void destroy() = 16777114;
 }

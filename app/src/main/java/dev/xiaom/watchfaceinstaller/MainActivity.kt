@@ -1,8 +1,16 @@
 package dev.xiaom.watchfaceinstaller
 
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.os.IBinder
+import android.os.ParcelFileDescriptor
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -10,51 +18,273 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import org.json.JSONArray
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import rikka.shizuku.Shizuku
+import java.io.File
+import java.io.IOException
 
 class MainActivity : ComponentActivity() {
     private var reader: ICacheReader? = null
-    private var connection: android.content.ServiceConnection? = null
-    private val args by lazy { Shizuku.UserServiceArgs(android.content.ComponentName(this, CacheReaderService::class.java)).daemon(false).processNameSuffix("reader").version(1) }
-    private val permission = Shizuku.OnRequestPermissionResultListener { _, result -> if (result == android.content.pm.PackageManager.PERMISSION_GRANTED) bindReader() }
+    private var connection: ServiceConnection? = null
+    private var serviceBinder: IBinder? = null
+    private var serviceDeath: IBinder.DeathRecipient? = null
+    private var bindingTimeout: Job? = null
+    private var closed = false
+    private var status by mutableStateOf("Shizuku 未连接")
+    private var connected by mutableStateOf(false)
+    private var busy by mutableStateOf(false)
+    private var error by mutableStateOf<String?>(null)
+    private var notice by mutableStateOf<String?>(null)
+    private var items by mutableStateOf(emptyList<WatchfaceItem>())
+    private var selected by mutableStateOf<WatchfaceInfo?>(null)
+    private var pendingExport: File? = null
+    private val directory get() = File(filesDir, "watchfaces")
+    private val args by lazy {
+        Shizuku.UserServiceArgs(ComponentName(this, CacheReaderService::class.java))
+            .daemon(false).processNameSuffix("reader").version(2)
+    }
+    private val permission = Shizuku.OnRequestPermissionResultListener { code, result ->
+        runOnUiThread {
+            if (!closed && code == 100) {
+                if (result == PackageManager.PERMISSION_GRANTED) bindReader()
+                else { status = "Shizuku 授权被拒绝"; error = status }
+            }
+        }
+    }
+    private val received = Shizuku.OnBinderReceivedListener {
+        runOnUiThread {
+            if (!closed) {
+                status = "Shizuku 可用，等待授权 / 连接"
+                try {
+                    if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) bindReader()
+                } catch (e: Exception) { error = e.message ?: "检查权限失败" }
+            }
+        }
+    }
+    private val dead = Shizuku.OnBinderDeadListener {
+        runOnUiThread { if (!closed) loseConnection("Shizuku 已停止，请重新连接") }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingExport = savedInstanceState?.getString("pendingExport")?.let { path ->
+            File(path).takeIf { it.parentFile == directory && it.isFile }
+        }
+        setContent {
+            MaterialTheme {
+                val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                    if (uri != null) importDocument(uri)
+                }
+                val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+                    val file = pendingExport
+                    pendingExport = null
+                    if (uri != null && file != null) exportDocument(file, uri)
+                }
+                WatchfaceScreen(status, connected, busy, error, notice, items, selected,
+                    ::requestAccess, ::scan, ::selectCache,
+                    { importer.launch(arrayOf("*/*")) },
+                    {
+                        selected?.let {
+                            pendingExport = it.file
+                            exporter.launch("watchface.bin")
+                        }
+                    }, ::install)
+            }
+        }
         Shizuku.addRequestPermissionResultListener(permission)
-        setContent { WatchfaceScreen(::scan, ::requestAccess) }
+        Shizuku.addBinderDeadListener(dead)
+        Shizuku.addBinderReceivedListenerSticky(received)
     }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        pendingExport?.let { outState.putString("pendingExport", it.path) }
+        super.onSaveInstanceState(outState)
+    }
+
     private fun requestAccess() {
-        if (!Shizuku.pingBinder()) return
-        if (Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED) bindReader()
-        else Shizuku.requestPermission(100)
+        try {
+            error = null
+            if (!Shizuku.pingBinder()) { status = "Shizuku 未运行"; error = status; return }
+            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) bindReader()
+            else { status = "等待 Shizuku 授权"; Shizuku.requestPermission(100) }
+        } catch (e: Exception) { error = e.message ?: "Shizuku 请求失败" }
     }
+
     private fun bindReader() {
-        val c = object : android.content.ServiceConnection {
-            override fun onServiceConnected(n: android.content.ComponentName, b: android.os.IBinder) { reader = ICacheReader.Stub.asInterface(b) }
-            override fun onServiceDisconnected(n: android.content.ComponentName) { reader = null }
+        if (closed || connection != null) return
+        status = "正在绑定缓存读取服务…"
+        val c = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+                if (closed || connection !== this) return
+                try {
+                    val death = IBinder.DeathRecipient {
+                        runOnUiThread {
+                            if (!closed && serviceBinder === binder) loseConnection("缓存读取服务已终止，请重新连接")
+                        }
+                    }
+                    binder.linkToDeath(death, 0)
+                    serviceBinder = binder
+                    serviceDeath = death
+                    reader = ICacheReader.Stub.asInterface(binder)
+                    connected = true
+                    status = "Shizuku 缓存读取服务已连接"
+                    bindingTimeout?.cancel()
+                } catch (e: Exception) { loseConnection("绑定失败：${e.message}") }
+            }
+            override fun onServiceDisconnected(name: ComponentName) { if (connection === this) loseConnection("缓存读取服务已断开") }
+            override fun onBindingDied(name: ComponentName) { if (connection === this) loseConnection("缓存读取服务绑定已失效") }
+            override fun onNullBinding(name: ComponentName) { if (connection === this) loseConnection("缓存读取服务返回空绑定") }
         }
         connection = c
-        Shizuku.bindUserService(args, c)
+        try {
+            Shizuku.bindUserService(args, c)
+            bindingTimeout = lifecycleScope.launch {
+                delay(15000)
+                if (!connected && connection === c) loseConnection("绑定超时，请确认 Shizuku 正常运行后重试")
+            }
+        } catch (e: Exception) { loseConnection("绑定失败：${e.message}") }
     }
-    private fun scan(): List<WatchfaceItem> = runCatching {
-        val json = JSONArray(org.json.JSONObject(reader?.scan() ?: "{files:[]}").getString("files"))
-        (0 until json.length()).map { val o=json.getJSONObject(it); WatchfaceItem(o.getString("name"),o.getString("path"),o.getLong("size"),o.getLong("modified")) }
-    }.getOrDefault(emptyList())
-    override fun onDestroy() { Shizuku.removeRequestPermissionResultListener(permission); connection?.let { Shizuku.unbindUserService(args,it,true) }; super.onDestroy() }
+
+    private fun releaseReader() {
+        bindingTimeout?.cancel()
+        val binder = serviceBinder
+        val death = serviceDeath
+        serviceBinder = null; serviceDeath = null; reader = null; connected = false
+        if (binder != null && death != null) {
+            try { binder.unlinkToDeath(death, 0) }
+            catch (e: Exception) { if (!closed) error = "清理死亡监听失败：${e.message}" }
+        }
+        val old = connection
+        connection = null
+        if (old != null) {
+            try { Shizuku.unbindUserService(args, old, true) }
+            catch (e: Exception) { if (!closed) error = "解除服务绑定失败：${e.message}" }
+        }
+    }
+
+    private fun loseConnection(message: String) {
+        releaseReader()
+        items = emptyList()
+        status = message
+        error = message
+    }
+
+    private fun operation(block: suspend () -> Unit) {
+        if (busy) return
+        busy = true; error = null; notice = null
+        lifecycleScope.launch {
+            try { block() }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: e.javaClass.simpleName }
+            finally { busy = false }
+        }
+    }
+
+    private fun scan() = operation {
+        items = emptyList()
+        val service = reader ?: throw IOException("请先连接 Shizuku")
+        val result = withContext(Dispatchers.IO) {
+            val json = JSONObject(service.scan())
+            val files = json.getJSONArray("files")
+            val found = (0 until files.length()).map { i ->
+                val o = files.getJSONObject(i)
+                WatchfaceItem(o.getString("name"), o.getString("path"), o.getLong("size"), o.getLong("modified"))
+            }
+            val errors = json.getJSONArray("errors")
+            Triple(found, (0 until errors.length()).joinToString("\n") { errors.getString(it) }, json.getBoolean("truncated"))
+        }
+        if (reader !== service) throw IOException("扫描期间服务已断开，请重试")
+        items = result.first
+        error = result.second.takeIf { it.isNotEmpty() }
+        notice = "找到 ${items.size} 个 BIN 文件" + if (result.third) "；扫描达到深度 / 数量限制，结果不完整" else ""
+    }
+
+    private suspend fun copyAndInspect(open: () -> java.io.InputStream): WatchfaceInfo = withContext(Dispatchers.IO) {
+        val file = open().use { WatchfaceFiles.copyInto(directory, it) }
+        try { WatchfaceParser.inspect(file) }
+        catch (e: Exception) { file.delete(); throw e }
+    }
+
+    private fun selectCache(item: WatchfaceItem) = operation {
+        val service = reader ?: throw IOException("请先连接 Shizuku")
+        selected = copyAndInspect { ParcelFileDescriptor.AutoCloseInputStream(service.openReadOnly(item.path)) }
+        notice = "已创建应用私有副本；不会修改缓存源文件"
+    }
+
+    private fun importDocument(uri: Uri) = operation {
+        selected = copyAndInspect { contentResolver.openInputStream(uri) ?: throw IOException("无法读取所选文档") }
+        notice = "已导入私有副本（最多 32 MiB）；格式识别不代表设备兼容性验证"
+    }
+
+    private fun exportDocument(file: File, uri: Uri) = operation {
+        withContext(Dispatchers.IO) {
+            contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                file.inputStream().use { it.copyTo(output) }
+            } ?: throw IOException("无法写入目标文档")
+        }
+        notice = "已导出到所选文档"
+    }
+
+    private fun install() {
+        try {
+            error = null
+            val info = selected ?: throw IOException("请先选择或导入 BIN")
+            require(info.format == "XIAOMI_BIN") { "仅识别出完整 Xiaomi 头部的文件可交给安装工具" }
+            InstallerBridge.openWithCompatibleInstaller(this, info.file)
+            notice = "已请求外部安装工具选择器；尚未确认安装，兼容性由外部工具检查"
+        } catch (e: Exception) { error = e.message ?: "无法打开安装工具" }
+    }
+
+    override fun onDestroy() {
+        closed = true
+        Shizuku.removeRequestPermissionResultListener(permission)
+        Shizuku.removeBinderReceivedListener(received)
+        Shizuku.removeBinderDeadListener(dead)
+        releaseReader()
+        super.onDestroy()
+    }
 }
 
-data class WatchfaceItem(val name:String,val path:String,val size:Long,val modified:Long)
+data class WatchfaceItem(val name: String, val path: String, val size: Long, val modified: Long)
 
 @Composable
-private fun WatchfaceScreen(scan: () -> List<WatchfaceItem>, request: () -> Unit) {
-    var items by remember { mutableStateOf(emptyList<WatchfaceItem>()) }
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Xiaomi Watchface Installer", style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(8.dp))
-        Text("优先支持：小米手环 9 Pro；提取使用 Shizuku。")
-        Row { Button(onClick=request) { Text("授权 / 连接 Shizuku") }; Spacer(Modifier.width(8.dp)); Button(onClick={items=scan()}) { Text("扫描表盘缓存") } }
-        Spacer(Modifier.height(8.dp))
-        LazyColumn { items(items) { Text("${it.name}\n${it.size} bytes\n${it.path}", Modifier.padding(vertical=8.dp)) } }
+private fun WatchfaceScreen(
+    status: String, connected: Boolean, busy: Boolean, error: String?, notice: String?,
+    files: List<WatchfaceItem>, selected: WatchfaceInfo?, request: () -> Unit, scan: () -> Unit,
+    select: (WatchfaceItem) -> Unit, onImport: () -> Unit, export: () -> Unit, install: () -> Unit
+) {
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item {
+            Text("Xiaomi Watchface Installer", style = MaterialTheme.typography.headlineSmall)
+            Text("小米手环 9 Pro · 只读缓存提取 / 外部工具交接")
+            Text(status)
+            Button(onClick = request, enabled = !busy && !connected) { Text("授权 / 连接 Shizuku") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = scan, enabled = !busy && connected) { Text("扫描缓存") }
+                Button(onClick = onImport, enabled = !busy) { Text("导入 BIN") }
+            }
+            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            notice?.let { Text(it) }
+        }
+        selected?.let { info ->
+            item {
+                Text("私有副本：${info.file.name}\n格式：${info.format}\nMagic：${info.magic}\nID：${info.id ?: "未识别"}\n名称：${info.name ?: "未识别"}\nSHA-256：${info.sha256}")
+                Text("头部识别不是完整有效性、签名或设备兼容性验证。")
+                Button(onClick = export, enabled = !busy) { Text("导出副本") }
+                Button(onClick = install, enabled = !busy && info.format == "XIAOMI_BIN") { Text("交给外部安装工具") }
+            }
+        }
+        items(files, key = { it.path }) { item ->
+            Text("${item.name}\n${item.size} bytes\n${item.path}")
+            Button(onClick = { select(item) }, enabled = !busy && connected) { Text("选择并检查") }
+        }
     }
 }
