@@ -1,5 +1,7 @@
 package dev.xiaom.watchfaceinstaller
 
+import android.content.Intent
+import android.app.Activity
 import android.content.ComponentName
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
@@ -53,11 +55,67 @@ class MainActivity : ComponentActivity() {
     private var notice by mutableStateOf<String?>(null)
     private var items by mutableStateOf(emptyList<WatchfaceItem>())
     private var selected by mutableStateOf<WatchfaceInfo?>(null)
-    private var pendingExport: File? = null
+    private var selectedPreview: File? = null
+    private var previewNotice by mutableStateOf("未读取预览")
+    private var pendingPairBin: File? = null
+    private var pendingPairPreview: File? = null
+    private var pendingPairName: String = "watchface"
+    private val previewDirectory get() = File(filesDir, "previews")
+    private var selectedIdEdited by mutableStateOf(false)
+    private var pendingBandOriginal: WatchfaceInfo? = null
+    private var pendingBandPreview: File? = null
+    private var pendingBandEdited = false
+    private fun exportBase(info: WatchfaceInfo) = ExportNames.forInfo(info, selectedIdEdited)
+    private val bandEditor = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val original = pendingBandOriginal
+        val preview = pendingBandPreview
+        val wasEdited = pendingBandEdited
+        pendingBandOriginal = null; pendingBandPreview = null
+        if (result.resultCode == Activity.RESULT_OK) {
+            operation {
+                require(original != null) { "缺少原工作副本状态，无法安全接收返回文件" }
+                val path = result.data?.getStringExtra("private_path") ?: throw IOException("未返回 private_path")
+                val updated = withContext(Dispatchers.IO) { WorkingCopyResult.accept(filesDir, path, original) }
+                selected = updated
+                selectedIdEdited = wasEdited || updated.id != original.id
+                selectedPreview = preview?.takeIf { it.isFile && it.canonicalFile.parentFile == previewDirectory.canonicalFile }
+                previewNotice = if (selectedPreview != null) "保留原表盘预览（仅 ID 副本修改，未重新认证）" else "无可用预览；可只导出 BIN"
+                notice = "已接收新工作副本，重新计算 SHA-256 / ID；原文件未覆盖" + if (selectedIdEdited) "；导出名附当前 ID" else ""
+            }
+        }
+    }
+    private fun openBandEditor() = operation {
+        val current = selected ?: throw IOException("请先选择 BIN")
+        val checked = withContext(Dispatchers.IO) {
+            val file = WorkingCopyResult.privateFile(filesDir, current.file.path)
+            WatchfaceParser.inspect(file).also { require(it.sha256 == current.sha256) { "工作副本已变化，请重新选择" } }
+        }
+        require(checked.format == "XIAOMI_BIN" && WatchfaceXml.validId(checked.id)) { "仅支持已识别 ID 的 Xiaomi BIN" }
+        pendingBandOriginal = current; pendingBandPreview = selectedPreview; pendingBandEdited = selectedIdEdited
+        bandEditor.launch(Intent(this, BandInstallActivity::class.java).putExtra("private_path", current.file.path))
+    }
+    private fun saveInfo(info: WatchfaceInfo) = Bundle().apply {
+        putString("path", info.file.path); putString("sha", info.sha256); putString("id", info.id)
+        putString("name", info.name); putString("magic", info.magic); putString("format", info.format)
+        putStringArrayList("warnings", ArrayList(info.metadataWarnings))
+        info.metadata?.let { m -> putBundle("metadata", Bundle().apply {
+            putString("name", m.name); putString("id", m.id); putString("source", m.source)
+            putString("device", m.device); putString("screen", m.screen)
+        }) }
+    }
+    private fun restoreInfo(state: Bundle): WatchfaceInfo? = runCatching {
+        val file = WorkingCopyResult.privateFile(filesDir, state.getString("path")!!)
+        val meta = state.getBundle("metadata")?.let {
+            WatchfaceMetadata(it.getString("name")!!, it.getString("id")!!, it.getString("source")!!,
+                it.getString("device"), it.getString("screen"))
+        }
+        WatchfaceInfo(file, state.getString("magic")!!, state.getString("id"), state.getString("name"),
+            state.getString("format")!!, state.getString("sha")!!, meta, state.getStringArrayList("warnings") ?: emptyList())
+    }.getOrNull()
     private val directory get() = File(filesDir, "watchfaces")
     private val args by lazy {
         Shizuku.UserServiceArgs(ComponentName(this, CacheReaderService::class.java))
-            .daemon(false).processNameSuffix("reader").version(3)
+            .daemon(false).processNameSuffix("reader").version(4)
     }
     private val permission = Shizuku.OnRequestPermissionResultListener { code, result ->
         runOnUiThread {
@@ -83,18 +141,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        pendingExport = savedInstanceState?.getString("pendingExport")?.let { path ->
-            File(path).takeIf { it.parentFile == directory && it.isFile }
-        }
+        pendingBandOriginal = savedInstanceState?.getBundle("bandOriginal")?.let(::restoreInfo)
+        pendingBandPreview = savedInstanceState?.getString("bandPreview")?.let { File(it).takeIf { f -> f.isFile && f.canonicalFile.parentFile == previewDirectory.canonicalFile } }
+        pendingBandEdited = savedInstanceState?.getBoolean("bandEdited") ?: false
+        pendingPairBin = savedInstanceState?.getString("pairBin")?.let { runCatching { WorkingCopyResult.privateFile(filesDir, it) }.getOrNull() }
+        pendingPairPreview = savedInstanceState?.getString("pairPreview")?.let { File(it).takeIf { f -> f.isFile && f.canonicalFile.parentFile == previewDirectory.canonicalFile } }
+        pendingPairName = savedInstanceState?.getString("pairName") ?: "watchface"
         setContent {
             MaterialTheme {
                 val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                     if (uri != null) importDocument(uri)
                 }
-                val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
-                    val file = pendingExport
-                    pendingExport = null
-                    if (uri != null && file != null) exportDocument(file, uri)
+                val pairExporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+                    val bin = pendingPairBin; val preview = pendingPairPreview; val name = pendingPairName
+                    pendingPairBin = null; pendingPairPreview = null
+                    if (uri != null && bin != null) exportPair(bin, preview, name, uri)
                 }
                 WatchfaceScreen(if (useRoot) rootStatus else status,
                     if (useRoot) rootAuthorized else connected, busy, error, notice, items, selected,
@@ -108,10 +169,15 @@ class MainActivity : ComponentActivity() {
                     { importer.launch(arrayOf("*/*")) },
                     {
                         selected?.let {
-                            pendingExport = it.file
-                            exporter.launch("watchface.bin")
+                            pendingPairBin = it.file; pendingPairPreview = null; pendingPairName = exportBase(it)
+                            pairExporter.launch(null)
                         }
-                    }, { install(false) }, { install(true) })
+                    }, {
+                        selected?.let {
+                            pendingPairBin = it.file; pendingPairPreview = selectedPreview; pendingPairName = exportBase(it)
+                            pairExporter.launch(null)
+                        }
+                    }, previewNotice, selectedIdEdited, ::openBandEditor, { install(false) }, { install(true) })
             }
         }
         Shizuku.addRequestPermissionResultListener(permission)
@@ -120,7 +186,12 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        pendingExport?.let { outState.putString("pendingExport", it.path) }
+        pendingBandOriginal?.let { outState.putBundle("bandOriginal", saveInfo(it)) }
+        pendingBandPreview?.let { outState.putString("bandPreview", it.path) }
+        outState.putBoolean("bandEdited", pendingBandEdited)
+        pendingPairBin?.let { outState.putString("pairBin", it.path) }
+        pendingPairPreview?.let { outState.putString("pairPreview", it.path) }
+        outState.putString("pairName", pendingPairName)
         super.onSaveInstanceState(outState)
     }
 
@@ -260,6 +331,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun selectCache(item: WatchfaceItem) = operation {
+        selected = null; selectedIdEdited = false; selectedPreview = null; previewNotice = "正在读取预览…"
         selected = if (useRoot) {
             check(rootAuthorized) { "请先授权 / 检查 Root" }
             // Keep ownership outside runInterruptible: prompt coroutine cancellation
@@ -294,21 +366,35 @@ class MainActivity : ComponentActivity() {
             val verified = WatchfaceXml.verify(metadata.metadata, info.id)
             selected = info.copy(metadata = verified.metadata, metadataWarnings = metadata.warnings + verified.warnings)
         }
+        val preview = withContext(Dispatchers.IO) {
+            if (useRoot) rootSource.preview(previewDirectory, item.path, selected?.id)
+            else {
+                val service = reader ?: throw IOException("请先连接 Shizuku")
+                if (!WatchfaceXml.candidate(item.path)) PreviewResult(null, listOf("非候选缓存，无预览；可只导出 BIN"))
+                else WatchfacePreview.load(previewDirectory, selected?.id,
+                    { service.readMetadata(item.path, "resources/manifest.xml") },
+                    { service.listPreviews(item.path).toList() },
+                    { relative -> ParcelFileDescriptor.AutoCloseInputStream(service.openPreview(item.path, relative)).use(WatchfacePreview::bounded) })
+            }
+        }
+        selectedPreview = preview.file
+        previewNotice = (if (preview.file != null) "预览已保存为应用私有副本（${preview.file.extension.uppercase()}）" else "无可用预览，仅导出 BIN") +
+            preview.warnings.joinToString("；", prefix = if (preview.warnings.isEmpty()) "" else "；")
         notice = "已创建应用私有副本；不会修改缓存源文件"
     }
 
     private fun importDocument(uri: Uri) = operation {
+        selected = null; selectedIdEdited = false; selectedPreview = null; previewNotice = "导入的 BIN 无配套预览；可只导出 BIN"
         selected = copyAndInspect { contentResolver.openInputStream(uri) ?: throw IOException("无法读取所选文档") }
         notice = "已导入私有副本（最多 32 MiB）；格式识别不代表设备兼容性验证"
     }
 
-    private fun exportDocument(file: File, uri: Uri) = operation {
-        withContext(Dispatchers.IO) {
-            contentResolver.openOutputStream(uri, "wt")?.use { output ->
-                file.inputStream().use { it.copyTo(output) }
-            } ?: throw IOException("无法写入目标文档")
+    private fun exportPair(bin: File, preview: File?, name: String, tree: Uri) = operation {
+        // Finish the bounded transaction even on Activity destruction so cleanup is never abandoned.
+        val result = withContext(NonCancellable + Dispatchers.IO) {
+            WatchfaceExport.export(SafExportStore(contentResolver, tree), bin, preview, name)
         }
-        notice = "已导出到所选文档"
+        if (result.complete) notice = result.message else error = result.message
     }
 
     private fun install(share: Boolean) {
@@ -337,7 +423,7 @@ private fun WatchfaceScreen(
     status: String, connected: Boolean, busy: Boolean, error: String?, notice: String?,
     files: List<WatchfaceItem>, selected: WatchfaceInfo?, useRoot: Boolean, mode: (Boolean) -> Unit,
     request: () -> Unit, scan: () -> Unit,
-    select: (WatchfaceItem) -> Unit, onImport: () -> Unit, export: () -> Unit, install: () -> Unit, share: () -> Unit
+    select: (WatchfaceItem) -> Unit, onImport: () -> Unit, export: () -> Unit, exportPair: () -> Unit, previewNotice: String, idEdited: Boolean, internalInstall: () -> Unit, install: () -> Unit, share: () -> Unit
 ) {
     var filter by rememberSaveable { mutableStateOf(BinFilter.CANDIDATE) }
     var keyword by rememberSaveable { mutableStateOf("") }
@@ -381,11 +467,14 @@ private fun WatchfaceScreen(
             item {
                 Text("私有副本：${info.file.name}\n格式：${info.format}\nMagic：${info.magic}\nID：${info.id ?: "未识别"}\nBIN 解析名：${info.name ?: "未识别"}\nSHA-256：${info.sha256}")
                 info.metadata?.let { meta ->
-                    Text("XML 名称：${meta.name}\n来源：${meta.source}（已核对 BIN ID）\nXML ID：${meta.id}\n${meta.declaration}")
+                    Text("XML 名称：${meta.name}\n来源：${meta.source}（${if (idEdited) "原始 XML；副本曾改 ID，未重新认证" else "已核对 BIN ID"}）\nXML ID：${meta.id}\n${meta.declaration}")
                 }
                 info.metadataWarnings.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
                 Text("头部识别不是完整有效性、签名或设备兼容性验证。")
-                Button(onClick = export, enabled = !busy) { Text("导出副本") }
+                Text(previewNotice)
+                Button(onClick = exportPair, enabled = !busy) { Text("导出 BIN + 预览图到目录") }
+                Button(onClick = export, enabled = !busy) { Text("仅导出 BIN 到目录（不覆盖）") }
+                Button(onClick = internalInstall, enabled = !busy && info.format == "XIAOMI_BIN" && WatchfaceXml.validId(info.id)) { Text("内部工作副本 / 改 ID / BLE 诊断（非可用安装器）") }
                 Button(onClick = install, enabled = !busy && info.format == "XIAOMI_BIN") { Text("用安装工具打开") }
                 Button(onClick = share, enabled = !busy && info.format == "XIAOMI_BIN") { Text("分享文件到安装工具") }
                 Text("接收方需支持文件 URI；只打开首页或要求重选文件表示该入口未完成直接导入，可尝试另一方式或手动导出导入。")

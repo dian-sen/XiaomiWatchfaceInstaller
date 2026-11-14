@@ -5,7 +5,7 @@ plugins {
 }
 
 android { namespace = "dev.xiaom.watchfaceinstaller"; compileSdk = 35
-    defaultConfig { applicationId = "dev.xiaom.watchfaceinstaller"; minSdk = 26; targetSdk = 35; versionCode = 4; versionName = "0.4.0" }
+    defaultConfig { applicationId = "dev.xiaom.watchfaceinstaller"; minSdk = 26; targetSdk = 35; versionCode = 5; versionName = "0.5.0" }
     signingConfigs {
         create("distribution") {
             val keystorePath = System.getenv("SIGNING_STORE_FILE")
@@ -36,6 +36,7 @@ android { namespace = "dev.xiaom.watchfaceinstaller"; compileSdk = 35
 }
 
 dependencies {
+    implementation("org.bouncycastle:bcprov-jdk18on:1.80")
     testImplementation("junit:junit:4.13.2")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.10.0")

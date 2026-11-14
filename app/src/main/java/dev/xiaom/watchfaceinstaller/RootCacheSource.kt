@@ -27,6 +27,14 @@ class RootCacheSource(private val shell: RootShell = RootShell()) {
         shell.read(RootPolicy.metadataCommand(path, relative), WatchfaceXml.MAX_BYTES.toLong()) { WatchfaceXml.bounded(it) }
     }
 
+    fun preview(directory: File, path: String, id: String?): PreviewResult {
+        if (!WatchfaceXml.candidate(path)) return PreviewResult(null, listOf("非候选缓存，无预览；可只导出 BIN"))
+        return WatchfacePreview.load(directory, id,
+            { shell.read(RootPolicy.metadataCommand(path, "resources/manifest.xml"), WatchfaceXml.MAX_BYTES.toLong()) { WatchfaceXml.bounded(it) } },
+            { shell.text(RootPolicy.previewListCommand(path), 65536).split('\u0000').filter { it.isNotEmpty() } },
+            { relative -> shell.read(RootPolicy.previewCommand(path, relative), WatchfacePreview.MAX_BYTES.toLong()) { WatchfacePreview.bounded(it) } })
+    }
+
     fun copyInto(directory: File, path: String): File {
         RootPolicy.validatePath(path)
         return shell.read(RootPolicy.readCommand(path)) { input -> WatchfaceFiles.copyInto(directory, input) }
@@ -82,7 +90,7 @@ object RootPolicy {
 
     fun readCommand(path: String): String {
         validatePath(path)
-        return fixedReadCommand(path, false)
+        return fixedReadCommand(path, WatchfaceFiles.MAX_BYTES)
     }
 
     fun metadataPath(bin: String, relative: String): String {
@@ -92,11 +100,39 @@ object RootPolicy {
         return bin.substringBeforeLast('/') + "/" + relative
     }
 
-    fun metadataCommand(bin: String, relative: String): String = fixedReadCommand(metadataPath(bin, relative), true)
+    fun metadataCommand(bin: String, relative: String): String = fixedReadCommand(metadataPath(bin, relative), WatchfaceXml.MAX_BYTES.toLong())
 
-    private fun fixedReadCommand(path: String, xml: Boolean): String {
+    fun previewDirectory(bin: String): String {
+        validatePath(bin)
+        require(WatchfaceXml.candidate(bin)) { "仅候选 resource.bin 可读取预览" }
+        return bin.substringBeforeLast('/') + "/resources/_preview"
+    }
+    fun previewPath(bin: String, relative: String): String {
+        previewDirectory(bin)
+        require(WatchfacePreview.relative(relative) == relative) { "仅固定 preview/preview.png 或 resources/_preview 图片" }
+        return bin.substringBeforeLast('/') + "/" + relative
+    }
+    fun previewCommand(bin: String, relative: String) = fixedReadCommand(previewPath(bin, relative), WatchfacePreview.MAX_BYTES.toLong())
+    fun previewListCommand(bin: String): String = prelude + "\n" + """
+        fixed=${quote(previewPath(bin, WatchfacePreview.FIXED))}
+        if rootcheck "${'$'}{fixed%/*}" && canonicalroot "${'$'}{fixed%/*}" >/dev/null && [ -f "${'$'}fixed" ] && [ ! -L "${'$'}fixed" ]; then
+          printf 'preview/preview.png\000'
+        fi
+        d=${quote(previewDirectory(bin))}
+        [ -e "${'$'}d" ] || exit 0
+        rootcheck "${'$'}d" || fail '预览目录不存在、不可读或符号链接'
+        canonicalroot "${'$'}d" >/dev/null || fail '预览目录 canonical 不符'
+        count=0
+        for p in "${'$'}d"/*; do
+          [ -f "${'$'}p" ] && [ ! -L "${'$'}p" ] || continue
+          case "${'$'}p" in *.[pP][nN][gG]|*.[jJ][pP][gG]|*.[jJ][pP][eE][gG]) ;; *) continue;; esac
+          printf 'resources/_preview/%s\000' "${'$'}{p##*/}"
+          count=${'$'}((count+1)); [ "${'$'}count" -lt 64 ] || break
+        done
+    """.trimIndent()
+
+    private fun fixedReadCommand(path: String, limit: Long): String {
         val root = roots.first { path.startsWith("$it/") }
-        val limit = if (xml) WatchfaceXml.MAX_BYTES else WatchfaceFiles.MAX_BYTES
         return prelude + "\n" + """
             r=${quote(root)}
             rootcheck "${'$'}r" || fail '缓存根目录不存在、权限拒绝或符号链接'
@@ -119,8 +155,8 @@ object RootPolicy {
             case "${'$'}opened" in "${'$'}base"/*) ;; *) fail '已打开文件越界';; esac
             [ -f /proc/${'$'}${'$'}/fd/3 ] || fail '只允许普通文件'
             size=${'$'}(stat -L -c %s /proc/${'$'}${'$'}/fd/3) || fail 'stat 失败'
-            [ "${'$'}size" -le $limit ] || fail '${if (xml) "XML 超过 512 KiB，已跳过" else "文件超过 32 MiB"}'
-            ${if (xml) "exec head -c ${WatchfaceXml.MAX_BYTES + 1} <&3" else "exec cat <&3"}
+            [ "${'$'}size" -le $limit ] || fail '${if (limit == WatchfaceXml.MAX_BYTES.toLong()) "XML 超过 512 KiB，已跳过" else "文件超过读取大小限制"}'
+            ${if (limit == WatchfaceFiles.MAX_BYTES) "exec cat <&3" else "exec head -c ${limit + 1} <&3"}
         """.trimIndent()
     }
 

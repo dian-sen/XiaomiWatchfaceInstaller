@@ -38,13 +38,15 @@ object WatchfaceXml {
         it.isNotEmpty() && it.length <= 256 && it.none { c -> Character.isISOControl(c) }
     }
 
-    fun parse(bytes: ByteArray, source: String): WatchfaceMetadata? {
+    fun parse(bytes: ByteArray, source: String, previews: MutableList<String>? = null): WatchfaceMetadata? {
         require(bytes.size <= MAX_BYTES) { "XML 超过 512 KiB，已跳过" }
         require(source in paths)
         val description = source == paths[0]
         var id: String? = null; var direct: String? = null; var device: String? = null; var screen: String? = null
         var width: String? = null; var height: String? = null
         val translations = linkedMapOf<String, String>()
+        val images = linkedMapOf<String, String>()
+        val themes = mutableListOf<String>()
         val stack = mutableListOf<String>()
         var translation: String? = null
         val text = StringBuilder()
@@ -67,6 +69,13 @@ object WatchfaceXml {
                 if (!description && stack == listOf("Watchface", "Resources", "Translation", "Item") && translation == direct?.removePrefix("@")) {
                     val language = a.getValue("language")
                     clean(a.getValue("str"))?.let { if (language in listOf("zh_CN", "zh_TW", "en_US")) translations.putIfAbsent(language, it) }
+                }
+                if (!description && stack == listOf("Watchface", "Resources", "Image")) {
+                    val key = clean(a.getValue("name")); val src = clean(a.getValue("src"))
+                    if (key != null && src != null && images.size < 256) images.putIfAbsent(key, src)
+                }
+                if (!description && stack == listOf("Watchface", "Theme") && themes.size < 64) {
+                    clean(a.getValue("preview"))?.let { themes += it }
                 }
                 text.setLength(0)
             }
@@ -101,6 +110,8 @@ object WatchfaceXml {
         val name = if (!description && direct?.startsWith("@") == true) listOf("zh_CN", "zh_TW", "en_US").firstNotNullOfOrNull { translations[it] } else clean(direct)
         if (name == null) return null
         if (!description && width != null && height != null) screen = "${width}x${height}"
+        previews?.addAll((themes.map { if (it.startsWith("@")) images[it.drop(1)] else it } + images.values)
+            .filterNotNull().mapNotNull(WatchfacePreview::relative).distinct().take(64))
         return WatchfaceMetadata(name, id!!, source, device, screen)
     }
 
