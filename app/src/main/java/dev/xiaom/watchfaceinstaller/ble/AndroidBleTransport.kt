@@ -25,7 +25,7 @@ import java.util.UUID
 object BlePermissions {
     fun required(): Array<String> = if (Build.VERSION.SDK_INT >= 31)
         arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
-    else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    else arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
     fun granted(context: Context) = required().all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
 }
 
