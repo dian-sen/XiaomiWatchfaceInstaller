@@ -171,7 +171,12 @@ class XiaomiClassicSessionTest {
                 }
             }
             val link = XiaomiClassicSession(transport, responseTimeoutMs = 1000)
-            try { link.connectAndAuthenticate(mac, key); fail() } catch (e: java.io.IOException) { assertSame(io, e) }
+            try { link.connectAndAuthenticate(mac, key); fail() } catch (e: java.io.IOException) {
+                // Coroutine debug stack recovery may clone IOException and chain the original.
+                assertTrue(generateSequence<Throwable>(e) { it.cause }.take(8).any { it === io })
+                assertEquals(io.javaClass, e.javaClass)
+                assertEquals(io.message, e.message)
+            }
             assertEquals(expected, link.failure!!.phase)
             assertEquals(expected, link.phase)
             val snapshot = link.failure
