@@ -57,7 +57,7 @@ class MainActivity : ComponentActivity() {
     private val directory get() = File(filesDir, "watchfaces")
     private val args by lazy {
         Shizuku.UserServiceArgs(ComponentName(this, CacheReaderService::class.java))
-            .daemon(false).processNameSuffix("reader").version(2)
+            .daemon(false).processNameSuffix("reader").version(3)
     }
     private val permission = Shizuku.OnRequestPermissionResultListener { code, result ->
         runOnUiThread {
@@ -221,8 +221,14 @@ class MainActivity : ComponentActivity() {
         items = emptyList()
         if (useRoot) {
             check(rootAuthorized) { "请先授权 / 检查 Root" }
-            val result = runInterruptible(Dispatchers.IO) { rootSource.scan() }
-            items = result.files.map { WatchfaceItem(it.name, it.path, it.size, it.modified) }
+            val (result, enriched) = runInterruptible(Dispatchers.IO) {
+                val result = rootSource.scan()
+                result to result.files.map {
+                    val metadata = rootSource.metadata(it.path)
+                    WatchfaceItem(it.name, it.path, it.size, it.modified, metadata.metadata, metadata.warnings)
+                }
+            }
+            items = enriched
             error = result.diagnostics.joinToString("\n").takeIf { it.isNotEmpty() }
             notice = "Root 找到 ${items.size} 个 BIN 文件" +
                 if (result.truncated) "；达到大小 / 深度 / 数量限制，结果不完整" else "；扫描完成"
@@ -234,7 +240,9 @@ class MainActivity : ComponentActivity() {
             val files = json.getJSONArray("files")
             val found = (0 until files.length()).map { i ->
                 val o = files.getJSONObject(i)
-                WatchfaceItem(o.getString("name"), o.getString("path"), o.getLong("size"), o.getLong("modified"))
+                val path = o.getString("path")
+                val metadata = WatchfaceXml.load(path) { service.readMetadata(path, it) }
+                WatchfaceItem(o.getString("name"), path, o.getLong("size"), o.getLong("modified"), metadata.metadata, metadata.warnings)
             }
             val errors = json.getJSONArray("errors")
             Triple(found, (0 until errors.length()).joinToString("\n") { errors.getString(it) }, json.getBoolean("truncated"))
@@ -271,6 +279,20 @@ class MainActivity : ComponentActivity() {
         } else {
             val service = reader ?: throw IOException("请先连接 Shizuku")
             copyAndInspect { ParcelFileDescriptor.AutoCloseInputStream(service.openReadOnly(item.path)) }
+        }
+        // Re-read only the fixed XML siblings, now using the actual private BIN ID.
+        // A path ID was sufficient for the list, never for selected-file details.
+        selected?.let { info ->
+            val metadata = if (useRoot) {
+                runInterruptible(Dispatchers.IO) { rootSource.metadata(item.path, info.id, "BIN") }
+            } else {
+                val service = reader ?: throw IOException("请先连接 Shizuku")
+                withContext(Dispatchers.IO) {
+                    WatchfaceXml.load(item.path, info.id, "BIN") { service.readMetadata(item.path, it) }
+                }
+            }
+            val verified = WatchfaceXml.verify(metadata.metadata, info.id)
+            selected = info.copy(metadata = verified.metadata, metadataWarnings = metadata.warnings + verified.warnings)
         }
         notice = "已创建应用私有副本；不会修改缓存源文件"
     }
@@ -339,7 +361,7 @@ private fun WatchfaceScreen(
                 Button(onClick = scan, enabled = !busy && connected) { Text("扫描缓存") }
                 Button(onClick = onImport, enabled = !busy) { Text("导入 BIN") }
             }
-            Text("候选仅按路径筛选：文件名为 resource.bin（忽略大小写），且祖先目录无 resources 或 _lua。未读取头部，不凭文件名保证真实表盘；候选不等于有效性验证。")
+            Text("候选仅按路径筛选：文件名为 resource.bin（忽略大小写），且祖先目录无 resources 或 _lua。仅候选读取固定 description.xml / resources/manifest.xml；XML 名称需匹配缓存路径 ID，选择后再核对 BIN ID。候选不等于有效性验证。")
             Text("资源 BIN 包含所有非候选项（也可能是其他未分类 BIN），并非内容鉴定。")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 BinFilter.entries.forEach { option ->
@@ -349,7 +371,7 @@ private fun WatchfaceScreen(
             }
             OutlinedTextField(value = keyword, onValueChange = { keyword = it },
                 modifier = Modifier.fillMaxWidth(), singleLine = true,
-                label = { Text("文件名或路径关键词") })
+                label = { Text("XML 名称、文件名或路径关键词") })
             Text("显示 ${visibleFiles.size} / ${files.size} 个 BIN；候选 $candidateCount，资源/其他 ${files.size - candidateCount}（数量仅限本次扫描结果）")
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -357,7 +379,11 @@ private fun WatchfaceScreen(
         }
         selected?.let { info ->
             item {
-                Text("私有副本：${info.file.name}\n格式：${info.format}\nMagic：${info.magic}\nID：${info.id ?: "未识别"}\n名称：${info.name ?: "未识别"}\nSHA-256：${info.sha256}")
+                Text("私有副本：${info.file.name}\n格式：${info.format}\nMagic：${info.magic}\nID：${info.id ?: "未识别"}\nBIN 解析名：${info.name ?: "未识别"}\nSHA-256：${info.sha256}")
+                info.metadata?.let { meta ->
+                    Text("XML 名称：${meta.name}\n来源：${meta.source}（已核对 BIN ID）\nXML ID：${meta.id}\n${meta.declaration}")
+                }
+                info.metadataWarnings.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
                 Text("头部识别不是完整有效性、签名或设备兼容性验证。")
                 Button(onClick = export, enabled = !busy) { Text("导出副本") }
                 Button(onClick = install, enabled = !busy && info.format == "XIAOMI_BIN") { Text("用安装工具打开") }
@@ -370,6 +396,10 @@ private fun WatchfaceScreen(
                 dateFormat.format(Date(item.modified))
             } else "未知"
             Text("${item.name}\n${if (WatchfaceCatalog.isCandidate(item)) "候选（未验证）" else "资源/其他 BIN"}\n大小：${item.size} bytes\n修改时间：$modifiedText\n${item.path}")
+            item.metadata?.let { meta ->
+                Text("XML 名称：${meta.name}\n来源：${meta.source}\nXML ID：${meta.id}（仅匹配路径，待核对 BIN）\n${meta.declaration}")
+            }
+            item.metadataWarnings.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
             Button(onClick = { select(item) }, enabled = !busy && connected) { Text("选择并检查") }
         }
     }

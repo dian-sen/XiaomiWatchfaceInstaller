@@ -1,9 +1,10 @@
 package dev.xiaom.watchfaceinstaller
 
-/** Scan metadata only; modified is epoch milliseconds for both Root and Shizuku.
- * No file reads, header checks, hashing or private copies during filtering.
+/** Scan data and optional ID-bound XML declarations; modified is epoch milliseconds.
+ * Filtering itself never reads files, checks headers, hashes or copies.
  */
-data class WatchfaceItem(val name: String, val path: String, val size: Long, val modified: Long)
+data class WatchfaceItem(val name: String, val path: String, val size: Long, val modified: Long,
+    val metadata: WatchfaceMetadata? = null, val metadataWarnings: List<String> = emptyList())
 
 enum class BinFilter(val label: String) {
     CANDIDATE("候选"), ALL("全部 BIN"), RESOURCE("资源 BIN")
@@ -29,7 +30,7 @@ object WatchfaceCatalog {
                 BinFilter.RESOURCE -> !isCandidate(item)
             }
             matchesMode && (query.isEmpty() || item.name.contains(query, ignoreCase = true) ||
-                item.path.contains(query, ignoreCase = true))
+                item.path.contains(query, ignoreCase = true) || item.metadata?.name?.contains(query, ignoreCase = true) == true)
         }
     }
 }

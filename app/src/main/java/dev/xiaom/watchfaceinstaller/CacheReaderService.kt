@@ -64,6 +64,39 @@ class CacheReaderService : ICacheReader.Stub() {
         }.toString()
     }
 
+    override fun readMetadata(binPath: String, relative: String): ByteArray? {
+        val path = RootPolicy.metadataPath(binPath, relative)
+        val file = File(path)
+        val root = roots.first { path.startsWith(it.path + "/") }
+        // Allow the platform storage alias, but reject symlinks below it.
+        var current = File("/storage/emulated/0")
+        for (part in path.removePrefix("/storage/emulated/0/").split('/')) {
+            current = File(current, part)
+            val stat = try { android.system.Os.lstat(current.path) }
+            catch (e: android.system.ErrnoException) {
+                if (e.errno == android.system.OsConstants.ENOENT) return null
+                throw e
+            }
+            require(!android.system.OsConstants.S_ISLNK(stat.st_mode)) { "拒绝符号链接" }
+        }
+        val expectedRoot = File("/storage/emulated/0").canonicalPath + "/" + root.path.removePrefix("/storage/emulated/0/")
+        require(root.canonicalPath == expectedRoot) { "XML 缓存根目录包含符号链接或已改变" }
+        val canonical = file.canonicalPath
+        require(canonical.startsWith(expectedRoot + "/")) { "XML canonical 路径越界" }
+        val fd = android.system.Os.open(path, android.system.OsConstants.O_RDONLY or android.system.OsConstants.O_NOFOLLOW or android.system.OsConstants.O_NONBLOCK, 0)
+        try {
+            val descriptor = ParcelFileDescriptor.dup(fd)
+            descriptor.use {
+                require(File(android.system.Os.readlink("/proc/self/fd/${it.fd}")).canonicalPath == canonical) { "XML 打开期间路径改变" }
+                val stat = android.system.Os.fstat(fd)
+                require(android.system.OsConstants.S_ISREG(stat.st_mode)) { "XML 必须是普通文件" }
+                require(stat.st_size in 0..WatchfaceXml.MAX_BYTES.toLong()) { "XML 超过 512 KiB，已跳过" }
+                // Duplicate ownership only once; AutoCloseInputStream closes this fd.
+                return ParcelFileDescriptor.AutoCloseInputStream(it).use(WatchfaceXml::bounded)
+            }
+        } finally { android.system.Os.close(fd) }
+    }
+
     override fun openReadOnly(path: String): ParcelFileDescriptor {
         val file = File(path).canonicalFile
         require(roots.any { file.path.startsWith(it.canonicalPath + File.separator) }) { "缓存目录之外的路径" }

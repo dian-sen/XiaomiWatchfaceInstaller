@@ -94,3 +94,11 @@ ID 改写默认不提供：0x28 是特定 BIN 格式的 ID 起点，但九字节
 外部交接提供 ACTION_VIEW（打开）和 ACTION_SEND（分享）两条 URI 入口，均授予临时读取权限。接收 App 必须实现对应导入，出现首页/要求重选文件不算直接导入完成；可以改用另一方式或手动导出。当前仍不直接连接手环、不提供 ID 改写、不执行安装推送。
 
 手机实测：普通应用身份读取官方 Android/data 缓存返回 Permission denied，Root 读取成功。此处是别的 App 的外部专属目录，不是无条件可读公共存储，也不是 /data/user/0 内部私有目录。Downloads 中的文件通过 SAF 导入不需要 Root。
+
+## 0.4.0 XML 名称与元数据
+
+候选 `resource.bin` 优先读取同目录 `description.xml` 的 `watch/name`；缺失或无法使用时读取 `resources/manifest.xml` 的直接名称或 `@watchfaceName` 翻译，语言顺序 zh_CN、zh_TW、en_US。
+
+列表采用 XML 名称前核对缓存路径 ID；选择文件后重新以 BIN 头 ID 核对，不一致则警告并拒绝采用 XML 名称。列表可按中文名称搜索，详情保留 BIN 解析名与 XML 名称来源，显示设备和尺寸声明（不是兼容性认证）。单独导入的 BIN 没有旁边 XML 时仍可能显示未识别；不会凭空恢复名称。XML 元数据目前仅保存在当前会话，不随单独 BIN 导出。
+
+XML 读取固定白名单路径、只读、512 KiB 上限；禁止 DTD 和外部实体。纯 JVM 共84项测试通过；安全限制及解析优先级有专门测试。Root 与 Shizuku 均提供固定 XML 读取入口，不开放任意路径读取。

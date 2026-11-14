@@ -116,4 +116,55 @@ class RootPolicyTest {
         assertThrows(IOException::class.java) { shell().text(RootPolicy.readCommand(path), 1024) }
         assertTrue(shell().text(RootPolicy.scanCommand(), RootPolicy.MAX_OUTPUT).split('\u0000').contains("LIMIT"))
     }
+    @Test fun xmlWhitelistDoesNotWidenBinPolicy() {
+        val bin = RootPolicy.roots.first() + "/120917345196/resource.bin"
+        for (relative in WatchfaceXml.paths) {
+            assertEquals(bin.substringBeforeLast('/') + "/" + relative, RootPolicy.metadataPath(bin, relative))
+            assertThrows(IllegalArgumentException::class.java) { RootPolicy.readCommand(RootPolicy.metadataPath(bin, relative)) }
+        }
+        for (relative in listOf("../description.xml", "arbitrary.xml", "resources/../description.xml", "/etc/passwd", "description.xml\n")) {
+            assertThrows(IllegalArgumentException::class.java) { RootPolicy.metadataCommand(bin, relative) }
+        }
+        for (bad in listOf(bin.replace("resource.bin", "other.bin"), bin.replace("/120917345196/", "/120917345196/resources/"), "/etc/resource.bin")) {
+            assertThrows(IllegalArgumentException::class.java) { RootPolicy.metadataCommand(bad, "description.xml") }
+        }
+    }
+
+    @Test fun xmlReadPinsFdLimitsOutputAndRejectsLinks() {
+        makeRoots()
+        val bin = RootPolicy.roots.first() + "/resource.bin"
+        val xml = mapped(RootPolicy.metadataPath(bin, "description.xml")).apply { writeText("<watch/>") }
+        val command = RootPolicy.metadataCommand(bin, "description.xml")
+        assertTrue(command.contains("head -c 524289 <&3"))
+        assertEquals("<watch/>", shell().text(command, WatchfaceXml.MAX_BYTES))
+        val outside = temporary.newFile("outside.xml").apply { writeText("secret") }
+        xml.delete(); Files.createSymbolicLink(xml.toPath(), outside.toPath())
+        assertThrows(IOException::class.java) { shell().text(command, WatchfaceXml.MAX_BYTES) }
+        xml.delete()
+        java.io.RandomAccessFile(xml, "rw").use { it.setLength(WatchfaceXml.MAX_BYTES + 1L) }
+        val error = assertThrows(IOException::class.java) { shell().text(command, WatchfaceXml.MAX_BYTES) }
+        assertTrue(error.message!!.contains("512 KiB"))
+    }
+
+    @Test fun xmlIntermediateLinkAndDescriptorPathSwapAreSafe() {
+        makeRoots()
+        val bin = RootPolicy.roots.first() + "/resource.bin"
+        val directory = mapped(bin).parentFile!!
+        Files.createSymbolicLink(File(directory, "resources").toPath(), temporary.root.toPath())
+        temporary.newFile("manifest.xml").writeText("secret")
+        assertThrows(IOException::class.java) { shell().text(RootPolicy.metadataCommand(bin, "resources/manifest.xml"), WatchfaceXml.MAX_BYTES) }
+        val xml = File(directory, "description.xml").apply { writeText("original") }
+        val outside = temporary.newFile("outside-metadata.xml").apply { writeText("secret") }
+        val swap = "stat() { rm -f ${RootPolicy.quote(xml.path)}; ln -s ${RootPolicy.quote(outside.path)} ${RootPolicy.quote(xml.path)}; command stat \"\$@\"; };\n"
+        assertEquals("original", shell().text(swap + RootPolicy.metadataCommand(bin, "description.xml"), WatchfaceXml.MAX_BYTES))
+    }
+
+    @Test fun xmlQuotedParentDirectoryCannotInjectCommands() {
+        makeRoots()
+        val path = RootPolicy.roots.first() + "/中'\" \$(printf bad); `printf bad`\n/120917345196/resource.bin"
+        val xml = mapped(RootPolicy.metadataPath(path, "description.xml"))
+        xml.parentFile!!.mkdirs(); xml.writeText("<watch/>")
+        assertEquals("<watch/>", shell().text(RootPolicy.metadataCommand(path, "description.xml"), WatchfaceXml.MAX_BYTES))
+    }
+
 }

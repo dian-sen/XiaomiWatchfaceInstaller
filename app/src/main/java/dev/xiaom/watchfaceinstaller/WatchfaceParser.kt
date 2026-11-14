@@ -15,7 +15,9 @@ data class WatchfaceInfo(
     val id: String?,
     val name: String?,
     val format: String,
-    val sha256: String
+    val sha256: String,
+    val metadata: WatchfaceMetadata? = null,
+    val metadataWarnings: List<String> = emptyList()
 )
 
 object WatchfaceParser {

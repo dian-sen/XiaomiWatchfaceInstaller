@@ -22,6 +22,11 @@ class RootCacheSource(private val shell: RootShell = RootShell()) {
 
     fun scan(): RootScan = RootProtocol.parse(shell.text(RootPolicy.scanCommand(), RootPolicy.MAX_OUTPUT))
 
+    fun metadata(path: String, expectedId: String? = WatchfaceXml.pathId(path), identity: String = "缓存路径"): MetadataResult =
+        WatchfaceXml.load(path, expectedId, identity) { relative ->
+        shell.read(RootPolicy.metadataCommand(path, relative), WatchfaceXml.MAX_BYTES.toLong()) { WatchfaceXml.bounded(it) }
+    }
+
     fun copyInto(directory: File, path: String): File {
         RootPolicy.validatePath(path)
         return shell.read(RootPolicy.readCommand(path)) { input -> WatchfaceFiles.copyInto(directory, input) }
@@ -77,7 +82,21 @@ object RootPolicy {
 
     fun readCommand(path: String): String {
         validatePath(path)
+        return fixedReadCommand(path, false)
+    }
+
+    fun metadataPath(bin: String, relative: String): String {
+        validatePath(bin)
+        require(WatchfaceXml.candidate(bin)) { "仅候选 resource.bin 可读取 XML" }
+        require(relative in WatchfaceXml.paths) { "仅固定 metadata XML 路径" }
+        return bin.substringBeforeLast('/') + "/" + relative
+    }
+
+    fun metadataCommand(bin: String, relative: String): String = fixedReadCommand(metadataPath(bin, relative), true)
+
+    private fun fixedReadCommand(path: String, xml: Boolean): String {
         val root = roots.first { path.startsWith("$it/") }
+        val limit = if (xml) WatchfaceXml.MAX_BYTES else WatchfaceFiles.MAX_BYTES
         return prelude + "\n" + """
             r=${quote(root)}
             rootcheck "${'$'}r" || fail '缓存根目录不存在、权限拒绝或符号链接'
@@ -100,8 +119,8 @@ object RootPolicy {
             case "${'$'}opened" in "${'$'}base"/*) ;; *) fail '已打开文件越界';; esac
             [ -f /proc/${'$'}${'$'}/fd/3 ] || fail '只允许普通文件'
             size=${'$'}(stat -L -c %s /proc/${'$'}${'$'}/fd/3) || fail 'stat 失败'
-            [ "${'$'}size" -le 33554432 ] || fail '文件超过 32 MiB'
-            exec cat <&3
+            [ "${'$'}size" -le $limit ] || fail '${if (xml) "XML 超过 512 KiB，已跳过" else "文件超过 32 MiB"}'
+            ${if (xml) "exec head -c ${WatchfaceXml.MAX_BYTES + 1} <&3" else "exec cat <&3"}
         """.trimIndent()
     }
 
