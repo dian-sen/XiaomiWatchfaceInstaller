@@ -43,13 +43,15 @@ class BandInstallActivity : ComponentActivity() {
     private lateinit var sessionState: TextView
     private lateinit var bondedInfo: TextView
     private lateinit var firmware: EditText
-    private var attemptedFirmware = "未知"
     private var deviceDiagnostic = "selected-bonded-device=unknown"
+    private var bondReport: ClassicBondReport? = null
+    // Non-secret target selector, RAM only; never copied or saved with report metadata.
+    private var selectedBondAddress: String? = null
     private var lastDiagnostic = "尚未尝试连接；无失败诊断。"
     private var lastClassicPhase = ClassicPhase.IDLE
     private fun diagnosticText() = "Classic diagnostic (redacted)\n" +
         "service=${ClassicProfile.SERVICE_UUID} secure=true SDP=UUID\n" +
-        "firmware(user-provided; diagnostic-only)=$attemptedFirmware\n$deviceDiagnostic\n$lastDiagnostic\n无 key、完整 MAC、BIN 内容；不扫描、不自动重连。"
+        "firmware(user-provided; diagnostic-only)=${ClassicFirmware.diagnostic(firmware.text.toString())}\napp=${BuildConfig.VERSION_NAME} sdk=${Build.VERSION.SDK_INT} manufacturer=${Build.MANUFACTURER} model=${Build.MODEL}\n$deviceDiagnostic\nlast-selected-cache=${bondReport?.diagnostic() ?: "unknown"}\n$lastDiagnostic\ncachedUUIDs:\n${bondReport?.copyText() ?: "未知"}\n无 key、完整 MAC、设备名、序列号、BIN 内容；不扫描、不自动重连。"
     private fun rememberFailure(link: XiaomiClassicSession, error: Throwable): ClassicFailure {
         val report = link.failure ?: ClassicFailure.capture(link.phase, error, link.transportSnapshot)
         lastClassicPhase = report.phase
@@ -109,6 +111,10 @@ class BandInstallActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         submitted = savedInstanceState?.getBoolean(STATE_SUBMITTED) ?: false
         confirmed = savedInstanceState?.getBoolean(STATE_CONFIRMED) ?: false
+        savedInstanceState?.getStringArrayList("bond_cache_uuids")?.let { uuids ->
+            bondReport = ClassicBondReport.from(savedInstanceState.getBoolean("bond_cache_bonded"),
+                savedInstanceState.getString("bond_cache_type") ?: "UNKNOWN", uuids)
+        }
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 24, 32, 24) }
         setContentView(ScrollView(this).apply { addView(content) })
         fun label(text: String) = TextView(this).apply { this.text = text; setPadding(0, 10, 0, 10); content.addView(this) }
@@ -122,15 +128,19 @@ class BandInstallActivity : ComponentActivity() {
         status = label("未读取密钥，未连接，未安装。")
         sessionState = label("Classic：IDLE（尚未连接）")
         bondedInfo = label("所选系统配对设备：尚未选择。仅查询系统缓存，不发起发现 / SDP 刷新。")
+        button("刷新本地配对缓存信息") {
+            showBondedSelection(refreshSavedTarget = true)
+        }
         button("复制脱敏诊断") {
             getSystemService(android.content.ClipboardManager::class.java)
                 .setPrimaryClip(ClipData.newPlainText("Classic diagnostic", diagnosticText()))
             Toast.makeText(this, "已复制脱敏诊断（无密钥、完整 MAC 或 BIN 内容）", Toast.LENGTH_SHORT).show()
         }
         label("连接前会停止本机已有的 Bluetooth discovery；Android 12+ 需要 CONNECT + SCAN 权限。此连接流程不启动扫描，拒绝任一权限将停止连接。停止发现不是连接已修复的证明。")
-        label("固件（用户可选填写，例如 3.1.190；默认未知）。仅供诊断，不用于选择传输或固件 profile。")
+        label("固件标签（用户可选填写；默认未知）。仅供诊断，不用于选择传输或固件 profile。")
         firmware = EditText(this).apply {
             hint = "未知（可选固件版本）"
+            setText(savedInstanceState?.getString("firmware_label") ?: "")
             isSaveEnabled = false
             filters = arrayOf(android.text.InputFilter.LengthFilter(32))
             content.addView(this)
@@ -203,8 +213,14 @@ class BandInstallActivity : ComponentActivity() {
         progress.visibility = if (busy) View.VISIBLE else View.GONE
     }
     @android.annotation.SuppressLint("MissingPermission")
-    private fun showBondedSelection() {
-        val mac = records.getOrNull(selected ?: -1)?.mac ?: return
+    private fun showBondedSelection(refreshSavedTarget: Boolean = false) {
+        val mac = records.getOrNull(selected ?: -1)?.mac ?: selectedBondAddress.takeIf { refreshSavedTarget }
+        if (mac == null) {
+            bondedInfo.text = bondReport?.let {
+                "保留上次所选缓存快照（非当前实测；密钥清空后仍保留）。可点击刷新；页面重建后需重新选择记录。\n${it.diagnostic()}\n${it.copyText()}"
+            } ?: "尚未选择设备；先读取并选择记录。未请求权限、发现、SDP 或连接。"
+            return
+        }
         if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(this,
                 Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             bondedInfo.text = "所选配对设备：尚无读取权限；未请求权限或发现。"
@@ -226,12 +242,13 @@ class BandInstallActivity : ComponentActivity() {
                 else -> "UNKNOWN"
             }
             // BluetoothDevice.getUuids returns the local cache; never call fetchUuidsWithSdp.
-            val uuids = device.uuids?.map { it.uuid }?.take(32).orEmpty()
-            val spp = ClassicProfile.SERVICE_UUID in uuids
-            bondedInfo.text = "系统配对列表所选设备：${ClassicRedaction.text(device.name ?: "未命名")}\n" +
-                "type=$type · BONDED\n已缓存服务 UUID（非本次发现 / 广播实测）：${uuids.joinToString().ifEmpty { "未知 / 空" }}\n" +
+            val uuids = device.uuids?.map { it.uuid } ?: emptyList()
+            bondReport = ClassicBondReport.from(device.bondState == BluetoothDevice.BOND_BONDED, type, uuids.map { it.toString() })
+            val spp = bondReport!!.uuids.contains(ClassicProfile.SERVICE_UUID.toString().lowercase())
+            bondedInfo.text = "系统配对列表所选设备（不记录名称与地址）\n" +
+                "${bondReport!!.diagnostic()}\n已缓存服务 UUID（非本次发现 / 广播实测）：\n${bondReport!!.copyText().ifEmpty { "未知 / 空" }}\n" +
                 if (spp) "有标准 SPP 服务缓存线索，不保证当前可连接。" else "无 SPP 服务线索；缓存可能不完整，不能据此断言设备不支持。未发起发现。"
-            deviceDiagnostic = "selected-bonded-device=BONDED; type=$type; cached-SPP=$spp; uuid-count=${uuids.size}"
+            deviceDiagnostic = "selected-bonded-device=BONDED; type=$type; cached-SPP=$spp; uuid-count=${bondReport!!.uuids.size}"
         } catch (_: SecurityException) {
             bondedInfo.text = "配对设备缓存读取权限不可用；未发起发现。"
             deviceDiagnostic = "selected-bonded-device=permission-unavailable"
@@ -346,6 +363,7 @@ class BandInstallActivity : ComponentActivity() {
                             setOnClickListener {
                                 if (!busy && this@BandInstallActivity.foreground && session == null) {
                                     selected = index
+                                    selectedBondAddress = record.mac
                                     status.text = "已选择记录 ${index + 1} · MAC ${record.mac}；密钥仅在内存。尚未连接。"
                                     refresh()
                                 }
@@ -360,7 +378,7 @@ class BandInstallActivity : ComponentActivity() {
                 runOnUiThread {
                     if (foreground && epoch == request) {
                         clearKeys(); busy = false; rootTask = null
-                        status.text = "安全读取失败：Root、快照或设备记录未通过校验；未使用密钥。如持续失败请清除本应用缓存。"
+                        status.text = "安全读取失败：Root、快照或设备记录未通过校验；未使用密钥。请检查 Root 授权、官方应用数据库可读性与记录格式；本应用不会清理系统配对。"
                         refresh()
                     }
                 }
@@ -401,7 +419,6 @@ class BandInstallActivity : ComponentActivity() {
                 return@launchOperation
             }
             submitted = false; confirmed = false
-            attemptedFirmware = ClassicFirmware.diagnostic(firmware.text.toString())
             val link = XiaomiClassicSession(AndroidClassicTransport(this), Build.VERSION.SDK_INT, Build.MODEL, "CN")
             session = link
             lastDiagnostic = "连接尝试进行中"
@@ -544,6 +561,13 @@ class BandInstallActivity : ComponentActivity() {
         workFile?.let { outState.putString(STATE_WORK_PATH, it.absolutePath) }
         outState.putBoolean(STATE_SUBMITTED, submitted)
         outState.putBoolean(STATE_CONFIRMED, confirmed)
+        // Only bounded non-secret version labels and identity-free cache metadata survive recreation.
+        outState.putString("firmware_label", ClassicFirmware.diagnostic(firmware.text.toString()))
+        bondReport?.let {
+            outState.putStringArrayList("bond_cache_uuids", ArrayList(it.uuids))
+            outState.putBoolean("bond_cache_bonded", it.bonded)
+            outState.putString("bond_cache_type", it.deviceType)
+        }
         super.onSaveInstanceState(outState)
     }
     private suspend fun renderSummary() {

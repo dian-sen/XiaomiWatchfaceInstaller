@@ -157,3 +157,11 @@ AuthKey 默认仍只显示掩码。用户必须二次确认风险后，才可短
 对已配对9Pro的Classic连接，先检查本机是否正在discovery；仅在正在发现时调用cancelDiscovery一次，并最多等待1500ms停止。取消拒绝或停止超时明确失败，不继续创建socket。Android12+会要求CONNECT与SCAN（只为停止发现，不主动扫描），拒绝时不偷偷跳过。
 
 脱敏诊断增加discoveryBefore/discoveryAfter与socketElapsedMs，以及仅供记录的固件版本。未观测字段为null，不假报false。固件3.1.190目前仍没有实际互通验证，不据版本号强制BLE/Classic、不自动改用insecure或反射channel1。此版本只能宣称补齐前置处理与诊断，不能保证解决SOCKET_CONNECT的read ret -1。
+
+## 0.7.4 只读配对缓存诊断
+
+RFCOMM `SOCKET_CONNECT` 阶段快速关闭（例如数百毫秒）只证明 socket 建立失败、尚未进入 AuthKey 认证；不能据此断定是远端拒绝，也不能靠修改 AuthKey 或表盘 ID 修复。保留现有系统配对，不建议为了这个单一日志清除配对。
+
+新增“刷新本地配对缓存信息”：只读取 Android 已配对设备和系统缓存 UUID，不执行 fetchUuidsWithSdp、不发起发现或连接。可复制报告包含去重后的 UUID、服务分类、SDK/厂商/手机型号，不包含 MAC、设备名称、序列号、AuthKey 或 BIN。缓存 UUID 缺少SPP并不证明设备不支持，因为可能只是缓存不完整；有SPP也不证明当前固件可连接。失败耗时与 discovery 状态用于诊断，不构成自动切换协议依据。
+
+固件版本保持用户可选、默认“未知”；3.1.190只适用于用户自己录入时作为诊断备注，不参与连接策略。工具不会自动解绑、切换 insecure socket、强制反射 RFCOMM 通道或自动重连。

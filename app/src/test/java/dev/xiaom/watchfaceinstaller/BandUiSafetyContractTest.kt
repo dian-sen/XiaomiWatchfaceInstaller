@@ -65,7 +65,7 @@ class BandUiSafetyContractTest {
         assertTrue(band.substringAfter("private fun stopFlow()").contains("用户取消或页面离开"))
     }
     @Test fun passiveBondedDiagnosticsNeverStartBluetoothCommunication() {
-        val passive = band.substringAfter("private fun showBondedSelection()").substringBefore("private fun connectionBlockReason()")
+        val passive = band.substringAfter("private fun showBondedSelection(").substringBefore("private fun connectionBlockReason()")
         assertTrue(passive.contains("adapter?.bondedDevices"))
         assertTrue(passive.contains("device.uuids"))
         for (forbidden in listOf(".fetchUuidsWithSdp(", ".startDiscovery(", ".createBond(", ".connect(", "permission.launch("))
@@ -95,6 +95,34 @@ class BandUiSafetyContractTest {
         assertTrue(transport.contains("SystemClock.elapsedRealtime() - started"))
         assertFalse(transport.contains(".startDiscovery("))
         assertFalse(transport.contains(".startScan("))
+    }
+    @Test fun cacheRefreshAndSavedReportStayReadOnlyAndIdentityFree() {
+        val refreshButton = band.substringAfter("button(\"刷新本地配对缓存信息\")").substringBefore("button(\"复制脱敏诊断\")")
+        assertTrue(refreshButton.contains("showBondedSelection(refreshSavedTarget = true)"))
+        val passive = band.substringAfter("private fun showBondedSelection(").substringBefore("private fun connectionBlockReason()")
+        assertTrue(passive.contains("Manifest.permission.BLUETOOTH_CONNECT"))
+        assertFalse(passive.contains("BLUETOOTH_SCAN"))
+        for (forbidden in listOf("permission.launch", "authenticate()", "scanDiagnostic()", ".connect(", ".fetchUuidsWithSdp(", ".startDiscovery(")) {
+            assertFalse(forbidden, refreshButton.contains(forbidden))
+            assertFalse(forbidden, passive.contains(forbidden))
+        }
+        assertTrue(passive.contains("ClassicBondReport.from"))
+        assertFalse(passive.contains("device.name"))
+        val cleanup = band.substringAfter("private fun clearKeys()").substringBefore("private fun readKeys()")
+        assertFalse(cleanup.contains("bondReport"))
+        assertFalse(cleanup.contains("selectedBondAddress"))
+        val save = band.substringAfter("override fun onSaveInstanceState").substringBefore("private suspend fun renderSummary")
+        assertTrue(save.contains("ClassicFirmware.diagnostic(firmware.text.toString())"))
+        assertTrue(save.contains("ArrayList(it.uuids)"))
+        assertFalse(save.contains(".mac")); assertFalse(save.contains(".name"))
+        assertTrue(band.contains("getStringArrayList(\"bond_cache_uuids\")"))
+        val diagnostic = band.substringAfter("private fun diagnosticText()").substringBefore("private fun rememberFailure")
+        for (required in listOf("BuildConfig.VERSION_NAME", "Build.VERSION.SDK_INT", "Build.MANUFACTURER", "Build.MODEL", "bondReport?.copyText()"))
+            assertTrue(required, diagnostic.contains(required))
+        assertFalse(diagnostic.contains("Build.SERIAL"))
+        assertFalse(diagnostic.contains("getSerial("))
+        assertFalse(band.substringAfter("override fun onCreate").substringBefore("override fun onStart").contains("3.1.190"))
+        for (forbidden in listOf("removeBond", "createInsecure", "getMethod(")) assertFalse(forbidden, band.contains(forbidden))
     }
     @Test fun mainEntryStillValidatesPrivateHash() {
         val entry = source("MainActivity").substringAfter("private fun openBandEditor()").substringBefore("private fun rereadCurrentId()")

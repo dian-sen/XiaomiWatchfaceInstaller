@@ -32,6 +32,13 @@ object BandConnectionGate {
             report.causes.any { it.type == "IOException" } -> "I/O 失败（不据 read -1 推断固件传输类型）"
             else -> "操作失败"
         }
-        return "$phase：$detail\n$kind\n${report.diagnostic()}"
+        val snapshot = report.transport
+        val fast = phase == dev.xiaom.watchfaceinstaller.classic.ClassicPhase.SOCKET_CONNECT &&
+            snapshot.socketElapsedMs?.let { it >= 0 && it < 1_000 } == true &&
+            snapshot.discoveryBefore == false && snapshot.discoveryAfter == false
+        val guidance = if (fast)
+            "快速建连失败，未进入认证，不能据此认定远端拒绝；无需改AuthKey/ID；不自动解绑。"
+        else "不依据单次连接错误推断传输类型；不自动解绑或重连。"
+        return "$phase：$detail\n$kind\n$guidance\n${report.diagnostic()}"
     }
 }
