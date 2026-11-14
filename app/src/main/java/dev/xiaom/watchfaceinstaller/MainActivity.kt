@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
@@ -31,6 +32,8 @@ import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import java.io.File
 import java.io.IOException
+import java.text.DateFormat
+import java.util.Date
 
 class MainActivity : ComponentActivity() {
     private val rootSource = RootCacheSource()
@@ -108,7 +111,7 @@ class MainActivity : ComponentActivity() {
                             pendingExport = it.file
                             exporter.launch("watchface.bin")
                         }
-                    }, ::install)
+                    }, { install(false) }, { install(true) })
             }
         }
         Shizuku.addRequestPermissionResultListener(permission)
@@ -286,12 +289,13 @@ class MainActivity : ComponentActivity() {
         notice = "已导出到所选文档"
     }
 
-    private fun install() {
+    private fun install(share: Boolean) {
         try {
             error = null
             val info = selected ?: throw IOException("请先选择或导入 BIN")
             require(info.format == "XIAOMI_BIN") { "仅识别出完整 Xiaomi 头部的文件可交给安装工具" }
-            InstallerBridge.openWithCompatibleInstaller(this, info.file)
+            if (share) InstallerBridge.shareWithCompatibleInstaller(this, info.file)
+            else InstallerBridge.openWithCompatibleInstaller(this, info.file)
             notice = "已请求外部安装工具选择器；尚未确认安装，兼容性由外部工具检查"
         } catch (e: Exception) { error = e.message ?: "无法打开安装工具" }
     }
@@ -306,15 +310,18 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-data class WatchfaceItem(val name: String, val path: String, val size: Long, val modified: Long)
-
 @Composable
 private fun WatchfaceScreen(
     status: String, connected: Boolean, busy: Boolean, error: String?, notice: String?,
     files: List<WatchfaceItem>, selected: WatchfaceInfo?, useRoot: Boolean, mode: (Boolean) -> Unit,
     request: () -> Unit, scan: () -> Unit,
-    select: (WatchfaceItem) -> Unit, onImport: () -> Unit, export: () -> Unit, install: () -> Unit
+    select: (WatchfaceItem) -> Unit, onImport: () -> Unit, export: () -> Unit, install: () -> Unit, share: () -> Unit
 ) {
+    var filter by rememberSaveable { mutableStateOf(BinFilter.CANDIDATE) }
+    var keyword by rememberSaveable { mutableStateOf("") }
+    val visibleFiles = remember(files, filter, keyword) { WatchfaceCatalog.filter(files, filter, keyword) }
+    val candidateCount = remember(files) { files.count(WatchfaceCatalog::isCandidate) }
+    val dateFormat = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM) }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             Text("Xiaomi Watchface Installer", style = MaterialTheme.typography.headlineSmall)
@@ -332,6 +339,18 @@ private fun WatchfaceScreen(
                 Button(onClick = scan, enabled = !busy && connected) { Text("扫描缓存") }
                 Button(onClick = onImport, enabled = !busy) { Text("导入 BIN") }
             }
+            Text("候选仅按路径筛选：文件名为 resource.bin（忽略大小写），且祖先目录无 resources 或 _lua。未读取头部，不凭文件名保证真实表盘；候选不等于有效性验证。")
+            Text("资源 BIN 包含所有非候选项（也可能是其他未分类 BIN），并非内容鉴定。")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BinFilter.entries.forEach { option ->
+                    FilterChip(selected = filter == option, onClick = { filter = option },
+                        label = { Text(option.label) })
+                }
+            }
+            OutlinedTextField(value = keyword, onValueChange = { keyword = it },
+                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                label = { Text("文件名或路径关键词") })
+            Text("显示 ${visibleFiles.size} / ${files.size} 个 BIN；候选 $candidateCount，资源/其他 ${files.size - candidateCount}（数量仅限本次扫描结果）")
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             notice?.let { Text(it) }
@@ -341,11 +360,16 @@ private fun WatchfaceScreen(
                 Text("私有副本：${info.file.name}\n格式：${info.format}\nMagic：${info.magic}\nID：${info.id ?: "未识别"}\n名称：${info.name ?: "未识别"}\nSHA-256：${info.sha256}")
                 Text("头部识别不是完整有效性、签名或设备兼容性验证。")
                 Button(onClick = export, enabled = !busy) { Text("导出副本") }
-                Button(onClick = install, enabled = !busy && info.format == "XIAOMI_BIN") { Text("交给外部安装工具") }
+                Button(onClick = install, enabled = !busy && info.format == "XIAOMI_BIN") { Text("用安装工具打开") }
+                Button(onClick = share, enabled = !busy && info.format == "XIAOMI_BIN") { Text("分享文件到安装工具") }
+                Text("接收方需支持文件 URI；只打开首页或要求重选文件表示该入口未完成直接导入，可尝试另一方式或手动导出导入。")
             }
         }
-        items(files, key = { it.path }) { item ->
-            Text("${item.name}\n${item.size} bytes\n${item.path}")
+        items(visibleFiles, key = { it.path }) { item ->
+            val modifiedText = if (item.modified > 0) {
+                dateFormat.format(Date(item.modified))
+            } else "未知"
+            Text("${item.name}\n${if (WatchfaceCatalog.isCandidate(item)) "候选（未验证）" else "资源/其他 BIN"}\n大小：${item.size} bytes\n修改时间：$modifiedText\n${item.path}")
             Button(onClick = { select(item) }, enabled = !busy && connected) { Text("选择并检查") }
         }
     }

@@ -19,9 +19,16 @@ object InstallerBridge {
         context.startActivity(Intent.createChooser(intent, "选择表盘安装工具"))
     }
 
+    fun shareWithCompatibleInstaller(context: Context, file: File) {
+        require(file.isFile)
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+        context.startActivity(Intent.createChooser(exportIntent(uri), "分享表盘文件到安装工具"))
+    }
+
     fun exportIntent(uri: Uri): Intent = Intent(Intent.ACTION_SEND).apply {
         type = "application/octet-stream"
         putExtra(Intent.EXTRA_STREAM, uri)
+        clipData = ClipData.newRawUri("watchface.bin", uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 }

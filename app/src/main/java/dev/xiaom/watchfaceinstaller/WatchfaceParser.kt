@@ -3,6 +3,10 @@ package dev.xiaom.watchfaceinstaller
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 
 /** Conservative parser for the Xiaomi binary watchface family. */
 data class WatchfaceInfo(
@@ -28,7 +32,7 @@ object WatchfaceParser {
         val partialMagic = bytes.isNotEmpty() && bytes.size < 4 &&
             bytes.contentEquals(magic.copyOf(bytes.size))
         val id = if (completeHeader) readAscii(bytes, 0x28, 64) else null
-        val name = if (completeHeader) readUtf8(bytes, 0x68, 60) else null
+        val name = if (completeHeader) readName(bytes, 0x68, 60) else null
         val format = when {
             completeHeader -> "XIAOMI_BIN"
             isXiaomi || partialMagic -> "TRUNCATED_XIAOMI_BIN"
@@ -44,9 +48,25 @@ object WatchfaceParser {
         val s = raw.toString(Charsets.US_ASCII)
         return s.takeIf { it.matches(Regex("(?:[0-9]{9}|[0-9]{12})")) }
     }
-    private fun readUtf8(b: ByteArray, offset: Int, length: Int): String? =
-        b.copyOfRange(offset, offset + length).takeWhile { it.toInt() != 0 }.toByteArray()
-            .toString(Charsets.UTF_8).trim().takeIf { it.isNotEmpty() }
+    private fun readName(b: ByteArray, offset: Int, length: Int): String? {
+        val raw = b.copyOfRange(offset, offset + length).takeWhile { it.toInt() != 0 }.toByteArray()
+        // UTF-8 always wins when valid. Legacy fallback is a decoding heuristic, not
+        // encoding detection or proof that this header variant contains a name here.
+        // The captured real header has FF FF FF FF at 0x68: all decoders reject it.
+        for (encoding in listOf("UTF-8", "GB18030", "GBK")) {
+            val charset = Charset.forName(encoding)
+            val decoded = try {
+                charset.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(raw)).toString()
+            } catch (_: CharacterCodingException) { continue }
+            // Never turn replacement characters or binary control fields into names.
+            if (decoded.any { it == '\uFFFD' || Character.isISOControl(it) }) return null
+            if (!decoded.toByteArray(charset).contentEquals(raw)) continue
+            return decoded.trim().takeIf { it.isNotEmpty() }
+        }
+        return null
+    }
     private fun isZip(bytes: ByteArray): Boolean = bytes.size >= 4 &&
         bytes[0] == 0x50.toByte() && bytes[1] == 0x4b.toByte() &&
         ((bytes[2] == 3.toByte() && bytes[3] == 4.toByte()) ||

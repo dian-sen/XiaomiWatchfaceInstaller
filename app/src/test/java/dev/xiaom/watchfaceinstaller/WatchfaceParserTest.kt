@@ -29,6 +29,50 @@ class WatchfaceParserTest {
         assertEquals(64, info.sha256.length)
     }
 
+    private fun headerWithRawName(raw: ByteArray): ByteArray = header(name = "").also {
+        require(raw.size <= 60)
+        raw.copyInto(it, 0x68)
+    }
+
+    @Test fun strictUtf8TakesPriorityOverLegacyDecoders() {
+        // These UTF-8 bytes can also be decoded as GB18030, but must stay UTF-8.
+        assertEquals("测试表盘", inspect(header()).name)
+        assertEquals("晴天☀😀", inspect(header(name = "晴天☀😀")).name)
+        assertEquals("Classic", inspect(header(name = "  Classic  ")).name)
+    }
+
+    @Test fun decodesVerifiedGb18030AndGbkFixturesWithoutReplacement() {
+        // Fixed GBK bytes B2 E2 CA D4 B1 ED C5 CC = 测试表盘.
+        val gbk = byteArrayOf(0xb2.toByte(), 0xe2.toByte(), 0xca.toByte(), 0xd4.toByte(),
+            0xb1.toByte(), 0xed.toByte(), 0xc5.toByte(), 0xcc.toByte())
+        assertEquals("测试表盘", inspect(headerWithRawName(gbk)).name)
+        // U+20000 requires the four-byte GB18030 form 95 32 82 36, not GBK.
+        val gb18030 = byteArrayOf(0x95.toByte(), 0x32, 0x82.toByte(), 0x36)
+        assertEquals("𠀀", inspect(headerWithRawName(gb18030)).name)
+    }
+
+    @Test fun capturedBinaryFieldIsUnknownRatherThanReplacementName() {
+        // Actual captured header 0x68..0x6f: FF FF FF FF 00 00 00 06.
+        val captured = byteArrayOf(-1, -1, -1, -1, 0, 0, 0, 6)
+        assertNull(inspect(headerWithRawName(captured)).name)
+    }
+
+    @Test fun invalidEmptyReplacementAndControlNamesAreUnknown() {
+        for (raw in listOf(byteArrayOf(), byteArrayOf(0x81.toByte()), byteArrayOf(-1),
+            "   ".toByteArray(), "bad\uFFFDname".toByteArray(), "bad\nname".toByteArray(),
+            "bad\u007fname".toByteArray())) {
+            assertNull(raw.joinToString(), inspect(headerWithRawName(raw)).name)
+        }
+    }
+
+    @Test fun nameIsBoundedAndStopsAtFirstNul() {
+        assertEquals("Valid", inspect(headerWithRawName("Valid".toByteArray() + byteArrayOf(0, -1))).name)
+        val fullField = "a".repeat(60)
+        val bytes = headerWithRawName(fullField.toByteArray())
+        bytes.fill(-1, 0xa4, 0xa8)
+        assertEquals(fullField, inspect(bytes).name)
+    }
+
     @Test fun recognizesTwelveDigitId() {
         assertEquals("123456789012", inspect(header("123456789012")).id)
     }
