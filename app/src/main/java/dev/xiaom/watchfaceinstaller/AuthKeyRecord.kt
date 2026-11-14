@@ -5,7 +5,17 @@ import java.io.Closeable
 
 /** Deliberately not a data class: no generated toString/copy exposing the secret. */
 class AuthKeyRecord private constructor(val model: String, val mac: String, private val key: CharArray) : Closeable {
-    override fun close() { key.fill('\u0000') }
+    private var closed = false
+
+    /** Independent RAM-only bytes. Caller must erase promptly; never log, persist or put in intents. */
+    @Synchronized fun copyKeyBytes(): ByteArray {
+        check(!closed) { "认证记录已关闭" }
+        return ByteArray(16) { i ->
+            ((Character.digit(key[i * 2], 16) shl 4) or Character.digit(key[i * 2 + 1], 16)).toByte()
+        }
+    }
+
+    @Synchronized override fun close() { closed = true; key.fill('\u0000') }
     companion object {
         const val MODEL = "miwear.watch.n67cn"
         private val HEX = Regex("^[0-9a-fA-F]{32}$")

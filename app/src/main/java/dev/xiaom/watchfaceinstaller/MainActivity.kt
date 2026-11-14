@@ -504,7 +504,7 @@ private fun WatchfaceScreen(
                 Text(previewNotice)
                 Button(onClick = exportPair, enabled = !busy) { Text("导出 BIN + 预览图到目录") }
                 Button(onClick = export, enabled = !busy) { Text("仅导出 BIN 到目录（不覆盖）") }
-                Button(onClick = internalInstall, enabled = !busy && info.format == "XIAOMI_BIN" && WatchfaceXml.validId(info.id)) { Text("内部工作副本 / 改 ID / BLE 诊断（非可用安装器）") }
+                Button(onClick = internalInstall, enabled = !busy && info.format == "XIAOMI_BIN" && WatchfaceXml.validId(info.id)) { Text("内部改 ID / Classic 实验性安装") }
                 Button(onClick = install, enabled = !busy && info.format == "XIAOMI_BIN") { Text("用安装工具打开") }
                 Button(onClick = share, enabled = !busy && info.format == "XIAOMI_BIN") { Text("分享文件到安装工具") }
                 Text("接收方需支持文件 URI；只打开首页或要求重选文件表示该入口未完成直接导入，可尝试另一方式或手动导出导入。")

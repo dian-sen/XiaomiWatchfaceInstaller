@@ -1,168 +1,430 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 package dev.xiaom.watchfaceinstaller
 
+import android.Manifest
 import android.app.AlertDialog
-import android.content.Intent
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.content.ClipData
-import androidx.core.content.FileProvider
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.view.View
+import android.view.WindowManager
 import android.widget.*
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
+import dev.xiaom.watchfaceinstaller.classic.*
 import dev.xiaom.watchfaceinstaller.ble.*
 import kotlinx.coroutines.*
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 
-/** Internal activity only: register android:exported="false", with NO intent filters. */
+/** Internal entry: private working copies only. Secrets are RAM-only, never Activity results/state. */
 class BandInstallActivity : ComponentActivity() {
     companion object {
         const val EXTRA_PRIVATE_PATH = "private_path"
-        // RESULT_OK means a local copy was selected, NEVER that a device installed it.
         const val EXTRA_RESULT_ID = "result_id"
         const val EXTRA_RESULT_SHA256 = "result_sha256"
         const val EXTRA_RESULT_INSTALLED = "result_installed"
         private const val STATE_WORK_PATH = "work_path"
+        private const val STATE_SUBMITTED = "install_submitted"
+        private const val STATE_CONFIRMED = "install_confirmed"
     }
     private lateinit var status: TextView
     private lateinit var summary: TextView
-    private lateinit var devices: LinearLayout
+    private lateinit var sessionState: TextView
+    private lateinit var choices: LinearLayout
+    private lateinit var progress: ProgressBar
+    private lateinit var edit: Button
+    private lateinit var back: Button
+    private lateinit var rootRead: Button
+    private lateinit var connect: Button
+    private lateinit var install: Button
+    private lateinit var blePanel: LinearLayout
+    private lateinit var bleScan: Button
+    private lateinit var bleDevices: LinearLayout
+    private var bleLink: AndroidBleTransport? = null
+    private var pendingBlePermission = false
+    private lateinit var newId: EditText
     private var workFile: File? = null
-    private lateinit var editButton: Button
-    private lateinit var returnButton: Button
-    private lateinit var fileProgress: ProgressBar
-    private var fileBusy = true
-    private fun setFileBusy(value: Boolean) {
-        fileBusy = value
-        fileProgress.visibility = if (value) android.view.View.VISIBLE else android.view.View.GONE
-        editButton.isEnabled = !value && workFile != null
-        returnButton.isEnabled = !value && workFile != null
+    private var initialized = false
+    private var foreground = false
+    private var busy = false
+    private var operation: Job? = null
+    private var observer: Job? = null
+    private var session: XiaomiClassicSession? = null
+    private var dialog: AlertDialog? = null
+    private var pendingPermission = false
+    private var submitted = false
+    private var confirmed = false
+    private val secretLock = Any()
+    private val executor = Executors.newSingleThreadExecutor()
+    private var rootTask: Future<*>? = null
+    private var epoch = 0
+    private var records: List<AuthKeyRecord> = emptyList()
+    private var selected: Int? = null
+    private val permission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val resume = pendingPermission && foreground
+        pendingPermission = false
+        if (resume) {
+            busy = false
+            if (granted) authenticate() else { status.text = "蓝牙连接权限未获准；未连接、未安装。"; refresh() }
+        }
     }
-    private fun feedback(message: String) {
-        status.text = message
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+
+    private val blePermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        val resume = pendingBlePermission && foreground
+        pendingBlePermission = false
+        if (resume) {
+            busy = false
+            if (BlePermissions.granted(this)) scanDiagnostic()
+            else { status.text = "BLE 诊断权限未获准；未扫描。"; refresh() }
+        }
     }
-    private fun currentFile(): File? = workFile.also {
-        if (it == null) feedback("工作副本尚未就绪或加载失败，请返回主界面重新选择 BIN。")
-    }
-    private var scanJob: Job? = null
-    private var connectionJob: Job? = null
-    private var transport: AndroidBleTransport? = null
-    private val candidates = linkedMapOf<String, BleCandidate>()
-    private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        if (BlePermissions.granted(this)) scan() else status.text = "权限未获准；未扫描、未连接。"
-    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        submitted = savedInstanceState?.getBoolean(STATE_SUBMITTED) ?: false
+        confirmed = savedInstanceState?.getBoolean(STATE_CONFIRMED) ?: false
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 24, 32, 24) }
         setContentView(ScrollView(this).apply { addView(content) })
         fun label(text: String) = TextView(this).apply { this.text = text; setPadding(0, 10, 0, 10); content.addView(this) }
-        label("小米手环 9 Pro · 副本编辑与 BLE 诊断")
-        label(XiaomiBleProfile.BLOCK_REASON)
-        label("当前未实现已验证的 9 Pro 直装。可检查私有工作副本、等长修改 ID，以及自愿进行 BLE 服务诊断。不读取/索取 AuthKey，不自动切换 SPP，不写入认证或表盘数据。")
-        summary = label("正在验证私有文件…").apply { textSize = 18f; setTextIsSelectable(true) }
-        status = label("未扫描，未连接，未安装。")
-        fileProgress = ProgressBar(this).also { content.addView(it) }
-        val newId = EditText(this).apply {
+        fun button(text: String, action: () -> Unit) = Button(this).apply {
+            this.text = text; setOnClickListener { action() }; content.addView(this)
+        }
+        label("小米手环 9 Pro · 实验性 Classic 安装")
+        label("尚未真机验证，机型兼容性未保证。流程：私有 BIN → 可选改 ID → Root 读取 n67cn 密钥 → 手动选设备 → 连接并认证 → 单独确认安装。必须先在系统蓝牙中完成配对，本应用不自动配对。")
+        label("修改 ID 不绕过签名或校验。认证 READY 仅表示连接就绪；上传进度不是安装成功。离开页面立即取消、清密钥并关闭连接，不自动重连或重刷。")
+        summary = label("正在验证私有工作副本…").apply { setTextIsSelectable(true) }
+        status = label("未读取密钥，未连接，未安装。")
+        sessionState = label("Classic：IDLE")
+        progress = ProgressBar(this).also { content.addView(it) }
+        newId = EditText(this).apply {
             hint = "新 ID（保持当前 9 或 12 位长度）"
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
             isSaveEnabled = false
-            filters = arrayOf(android.text.InputFilter.LengthFilter(12))
+            filters = arrayOf(android.text.InputFilter.LengthFilter(12)); content.addView(this)
         }
-        content.addView(newId)
-        editButton = Button(this).apply {
-            isEnabled = false
-            text = "生成改 ID 副本（不覆盖源文件）"
-            setOnClickListener {
-                val source = currentFile() ?: return@setOnClickListener
-                if (fileBusy) return@setOnClickListener
-                val requested = newId.text.toString()
-                AlertDialog.Builder(this@BandInstallActivity)
-                    .setTitle("仅修改副本的 ID？")
-                    .setMessage("保持原 ID 字节长度。不会修复签名/校验，也不保证手环接受。原文件不覆盖。")
-                    .setNegativeButton("取消", null)
-                    .setPositiveButton("生成副本") { _, _ ->
-                        if (fileBusy) return@setPositiveButton
-                        setFileBusy(true)
-                        status.text = "正在生成并校验改 ID 副本…"
-                        lifecycleScope.launch {
-                            try {
-                                val result = withContext(Dispatchers.IO) { WatchfaceIdEditor.createCopy(filesDir, source, requested) }
-                                workFile = result.file
-                                renderSummary()
-                                summary.text = "ID 修改成功：${result.oldId} → ${result.newId}\n${summary.text}"
-                                feedback("ID 修改成功：${result.oldId} → ${result.newId}\nSHA-256：${result.sha256}\n尚未安装；签名和兼容性未验证。")
-                            } catch (e: Exception) {
-                                if (e is CancellationException) throw e
-                                feedback("修改拒绝：${e.message}")
-                            } finally { setFileBusy(false) }
-                        }
-                    }.show()
+        edit = button("生成改 ID 副本（不覆盖源文件）", ::editCopy)
+        back = button("返回当前副本，交主界面导出", ::returnCopy)
+        rootRead = button("Root读取设备密钥（仅 n67cn）", ::readKeys)
+        label("只读小米运动健康数据库私有临时快照；候选展示 MAC，AuthKey 始终掩码。密钥不保存、不复制、不跨页面传递。读取后必须手动选一条。")
+        choices = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; isSaveEnabled = false; content.addView(this) }
+        connect = button("连接并认证（不安装）", ::authenticate)
+        install = button("安装当前私有 BIN（需二次确认）", ::confirmInstall)
+        button("取消 / 断开 / 清空密钥") { stopFlow(); status.text = stopMessage() }
+        blePanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        blePanel.addView(TextView(this).apply {
+            text = "独立 BLE 诊断：只扫描、发现服务及协商 MTU，不认证、不上传，不能替代 Classic 认证。广播名和 FE95 不证明型号兼容。"
+        })
+        bleScan = Button(this).apply { text = "扫描 BLE（15 秒，仅诊断）"; setOnClickListener { scanDiagnostic() } }
+        blePanel.addView(bleScan)
+        bleDevices = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        blePanel.addView(bleDevices)
+        button("展开 / 收起独立 BLE 诊断") {
+            blePanel.visibility = if (blePanel.visibility == View.GONE) View.VISIBLE else View.GONE
+        }
+        content.addView(blePanel)
+        restoredPath = savedInstanceState?.getString(STATE_WORK_PATH) ?: intent.getStringExtra(EXTRA_PRIVATE_PATH)
+        refresh()
+    }
+    private var restoredPath: String? = null
+    override fun onStart() {
+        super.onStart(); synchronized(secretLock) { foreground = true }
+        if (!initialized) {
+            initialized = true
+            launchOperation {
+                val path = restoredPath ?: error("缺少私有工作副本路径")
+                workFile = withContext(Dispatchers.IO) { privateSnapshot(path) }
+                renderSummary()
+                status.text = if (submitted) stopMessage() else "私有工作副本已验证。可改 ID、返回导出，或显式开始实验性 Classic 认证。"
             }
         }
-        content.addView(editButton)
-        returnButton = Button(this).apply {
-            isEnabled = false
-            text = "返回当前副本，交主界面导出"
-            setOnClickListener {
-                val file = currentFile() ?: return@setOnClickListener
-                if (fileBusy) return@setOnClickListener
-                setFileBusy(true)
-                lifecycleScope.launch {
-                    try {
-                        val info = withContext(Dispatchers.IO) { WatchfaceParser.inspect(file) }
-                        val uri = FileProvider.getUriForFile(this@BandInstallActivity, "$packageName.files", file)
-                        setResult(RESULT_OK, Intent().apply {
-                            data = uri
-                            clipData = ClipData.newRawUri("watchface", uri)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            putExtra(EXTRA_PRIVATE_PATH, file.canonicalPath)
-                            putExtra(EXTRA_RESULT_ID, info.id)
-                            putExtra(EXTRA_RESULT_SHA256, info.sha256)
-                            putExtra(EXTRA_RESULT_INSTALLED, false)
+        refresh()
+    }
+    private fun refresh() {
+        val enabled = foreground && !busy && dialog == null
+        edit.isEnabled = enabled && workFile != null && session == null
+        back.isEnabled = enabled && workFile != null
+        newId.isEnabled = edit.isEnabled
+        rootRead.isEnabled = enabled && session == null && workFile != null
+        connect.isEnabled = enabled && selected != null && session == null
+        install.isEnabled = enabled && workFile != null && session?.state?.value == XiaomiClassicSession.State.READY
+        for (i in 0 until choices.childCount) choices.getChildAt(i).isEnabled = enabled && session == null
+        bleScan.isEnabled = enabled && session == null
+        for (i in 0 until bleDevices.childCount) bleDevices.getChildAt(i).isEnabled = enabled && session == null
+        progress.visibility = if (busy) View.VISIBLE else View.GONE
+    }
+    /** Main-thread gate covers file work, Root, permission prompts, authentication and installation. */
+    private fun launchOperation(block: suspend () -> Unit) {
+        if (!foreground || busy || dialog != null) return
+        busy = true; refresh()
+        val request = epoch
+        operation = lifecycleScope.launch {
+            try { block() }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) {
+                if (foreground && epoch == request) {
+                    clearKeys()
+                    session?.close(); session = null
+                    observer?.cancel(); observer = null
+                    sessionState.text = "Classic：CLOSED"
+                }
+                if (foreground && epoch == request) status.text = if (submitted && !confirmed)
+                    "设备结果未知：安装请求可能已发送。请在手环确认状态；勿自动或盲目重刷。"
+                else "操作被拒绝或失败；未确认安装。请检查私有文件、系统已配对状态、Root / 权限和目标型号。"
+            } finally {
+                if (epoch == request) { busy = false; operation = null; refresh() }
+            }
+        }
+    }
+    private fun editCopy() {
+        val source = workFile ?: return
+        if (busy || !foreground) return
+        val id = newId.text.toString()
+        showDialog("仅修改副本 ID？", "保持原 ID 字节长度，不修复签名 / 校验，不保证手环接受。原文件不覆盖。", "生成副本") {
+            launchOperation {
+                val result = try {
+                    withContext(Dispatchers.IO) { WatchfaceIdEditor.createCopy(filesDir, source, id) }
+                } catch (e: IllegalArgumentException) {
+                    status.text = "ID 修改被拒绝：${e.message}"
+                    return@launchOperation
+                }
+                workFile = result.file
+                renderSummary()
+                status.text = "ID 修改成功：${result.oldId} → ${result.newId}\n尚未安装；可返回导出。"
+            }
+        }
+    }
+    private fun returnCopy() = launchOperation {
+        val file = workFile ?: error("无副本")
+        val info = withContext(Dispatchers.IO) { InstallConsent.capture(filesDir, file) }
+        val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+        setResult(RESULT_OK, Intent().apply {
+            data = uri; clipData = ClipData.newRawUri("watchface", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            putExtra(EXTRA_PRIVATE_PATH, file.canonicalPath)
+            putExtra(EXTRA_RESULT_ID, info.id); putExtra(EXTRA_RESULT_SHA256, info.sha256)
+            // Returning a local copy never claims hardware installation (even after a prior install).
+            putExtra(EXTRA_RESULT_INSTALLED, false)
+        })
+        finish()
+    }
+    private fun showDialog(title: String, message: String, positive: String, action: () -> Unit) {
+        if (!foreground || dialog != null) return
+        val d = AlertDialog.Builder(this).setTitle(title).setMessage(message)
+            .setNegativeButton("取消", null).setPositiveButton(positive) { _, _ ->
+                dialog = null; refresh()
+                if (foreground) action()
+            }.create()
+        dialog = d
+        d.setOnDismissListener { if (dialog === d) { dialog = null; refresh() } }
+        d.show(); refresh()
+    }
+    private fun clearKeys() {
+        synchronized(secretLock) { records.forEach { it.close() }; records = emptyList() }
+        selected = null; choices.removeAllViews()
+        window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
+    private fun readKeys() {
+        if (!foreground || busy || dialog != null || session != null) return
+        clearKeys(); busy = true; refresh()
+        status.text = "正在 Root 只读获取 n67cn 密钥；不会自动连接。"
+        val request = epoch
+        rootTask = executor.submit {
+            try {
+                val found = RootAuthKeySource(applicationContext).read()
+                synchronized(secretLock) {
+                    if (!foreground || epoch != request) { found.forEach { it.close() }; return@submit }
+                    records = found
+                }
+                runOnUiThread {
+                    if (!foreground || epoch != request) return@runOnUiThread
+                    window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    records.forEachIndexed { index, record ->
+                        choices.addView(Button(this).apply {
+                            isSaveEnabled = false
+                            text = "选择记录 ${index + 1} · ${record.model}\nMAC：${record.mac}\nAuthKey：••••••••••••••••••••••••••••••••"
+                            setOnClickListener {
+                                if (!busy && this@BandInstallActivity.foreground && session == null) {
+                                    selected = index
+                                    status.text = "已选择记录 ${index + 1} · MAC ${record.mac}；密钥仅在内存。尚未连接。"
+                                    refresh()
+                                }
+                            }
                         })
-                        finish()
-                    } catch (e: Exception) {
-                        if (e is CancellationException) throw e
-                        feedback("返回副本失败：${e.message}")
-                    } finally { setFileBusy(false) }
+                    }
+                    busy = false; rootTask = null
+                    status.text = "已读取 ${records.size} 条 n67cn 候选。请显式选择设备；尚未连接、未安装。"
+                    refresh()
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    if (foreground && epoch == request) {
+                        clearKeys(); busy = false; rootTask = null
+                        status.text = "安全读取失败：Root、快照或设备记录未通过校验；未使用密钥。如持续失败请清除本应用缓存。"
+                        refresh()
+                    }
                 }
             }
         }
-        content.addView(returnButton)
-        content.addView(Button(this).apply {
-            text = "查看安装确认与阻塞原因"
-            setOnClickListener { lifecycleScope.launch {
-                val file = currentFile() ?: return@launch
-                if (fileBusy) { feedback("副本正在处理，请稍后再试。"); return@launch }
-                try {
-                    val info = withContext(Dispatchers.IO) { WatchfaceParser.inspect(file) }
-                    AlertDialog.Builder(this@BandInstallActivity).setTitle("安装前检查（当前不可执行）")
-                        .setMessage("文件：${file.name}\nSHA-256：${info.sha256}\nID：${info.id ?: "无法识别"}\n目标：Xiaomi Smart Band 9 Pro\n\n警告：BIN magic/ID 不证明型号兼容；修改 ID 不绕过签名。\n\n${XiaomiBleProfile.BLOCK_REASON}")
-                        .setPositiveButton("关闭（不安装）", null).show()
-                } catch (e: Exception) { if (e is CancellationException) throw e; status.text = "文件检查失败：${e.message}" }
-            } }
-        })
-        content.addView(Button(this).apply {
-            text = "扫描 BLE 设备（15 秒，仅诊断）"
-            setOnClickListener { if (BlePermissions.granted(this@BandInstallActivity)) scan() else permissions.launch(BlePermissions.required()) }
-        })
-        content.addView(Button(this).apply { text = "取消 / 断开"; setOnClickListener { stop(); status.text = "已取消并关闭连接。未安装。" } })
-        devices = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; content.addView(devices)
-        lifecycleScope.launch {
-            try {
-                val path = savedInstanceState?.getString(STATE_WORK_PATH) ?: intent.getStringExtra(EXTRA_PRIVATE_PATH) ?: error("缺少私有工作副本路径")
-                workFile = withContext(Dispatchers.IO) { privateSnapshot(path) }
-                renderSummary()
-                feedback("工作副本已就绪，可修改 ID 或返回主界面导出。")
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                workFile = null
-                summary.text = "拒绝文件：${e.message}"
-                feedback("加载失败：${e.message}")
-            } finally { setFileBusy(false) }
+    }
+    private fun authenticate() {
+        if (!foreground || busy || dialog != null || session != null || selected == null) return
+        if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            pendingPermission = true; busy = true; refresh()
+            permission.launch(Manifest.permission.BLUETOOTH_CONNECT)
+            return
         }
+        launchOperation {
+            val record = records.getOrNull(selected ?: -1) ?: error("重新读取密钥")
+            // Only query already-bonded devices. Never call createBond, discovery or BLE scanning.
+            val adapter = getSystemService(BluetoothManager::class.java)?.adapter
+            if (adapter == null || !adapter.isEnabled || adapter.bondedDevices.none {
+                    it.address.equals(record.mac, true) && it.bondState == BluetoothDevice.BOND_BONDED
+                }) {
+                clearKeys()
+                status.text = "未连接：请先手动开启蓝牙并在系统设置配对目标 MAC，再返回重新读取密钥。不会自动配对。"
+                return@launchOperation
+            }
+            submitted = false; confirmed = false
+            val link = XiaomiClassicSession(AndroidClassicTransport(this), Build.VERSION.SDK_INT, Build.MODEL, "CN")
+            session = link
+            observer = lifecycleScope.launch {
+                link.state.collect { state ->
+                    sessionState.text = "Classic：$state"
+                    refresh()
+                }
+            }
+            val mac = record.mac
+            val key = record.copyKeyBytes()
+            clearKeys()
+            try {
+                link.connectAndAuthenticate(mac, key)
+                status.text = "READY：Classic 已连接并通过认证。尚未安装；只有点击安装并再次确认才发送文件。"
+            } catch (e: Throwable) {
+                link.close()
+                if (session === link) {
+                    observer?.cancel(); session = null
+                    sessionState.text = "Classic：CLOSED（认证未完成）"
+                }
+                throw e
+            } finally { key.fill(0) }
+        }
+    }
+    private fun confirmInstall() = launchOperation {
+        val link = session ?: error("尚未认证")
+        check(link.state.value == XiaomiClassicSession.State.READY)
+        val file = workFile ?: error("无副本")
+        // Capture immutable consent fields when opening the confirmation dialog, not on first page load.
+        val consent = withContext(Dispatchers.IO) { InstallConsent.capture(filesDir, file) }
+        showDialog("确认发送实验性表盘？", "文件：${consent.name}\nID：${consent.id}\n大小：${consent.size} 字节\nSHA-256：${consent.sha256}\n\n目标：小米手环 9 Pro / n67cn。协议尚未真机验证；BIN 头和 ID 不保证手环机型兼容。修改 ID 不修复签名，可能失败或使设备异常。\n认证成功、上传 100% 均不等于安装成功。上传后异常 / 取消则结果未知，勿盲目重刷。", "确认风险并发送") {
+            launchOperation {
+                check(session === link && link.state.value == XiaomiClassicSession.State.READY)
+                // No other asynchronous UI action can mutate this private file while consent is outstanding.
+                withContext(Dispatchers.IO) { consent.verify(filesDir, file) }
+                submitted = true; confirmed = false
+                try {
+                    val request = epoch
+                    val result = link.install(file) { p ->
+                        runOnUiThread {
+                            if (foreground && epoch == request && !confirmed)
+                                status.text = "传输 / 校验进度：${p.completed}/${p.total}\n进度不是成功，等待安装结果及设备激活确认。"
+                        }
+                    }
+                    confirmed = result.activeConfirmed
+                    status.text = if (confirmed) "安装成功：设备已确认 ID ${result.id} 已安装并激活。"
+                    else "设备未确认激活，结果未知；勿盲目重刷。"
+                } finally {
+                    link.close()
+                    if (session === link) {
+                        observer?.cancel(); session = null
+                        sessionState.text = "Classic：CLOSED"
+                    }
+                }
+            }
+        }
+    }
+    private fun scanDiagnostic() {
+        if (!foreground || busy || dialog != null || session != null) return
+        if (!BlePermissions.granted(this)) {
+            pendingBlePermission = true; busy = true; refresh()
+            blePermission.launch(BlePermissions.required()); return
+        }
+        launchOperation {
+            clearKeys(); bleDevices.removeAllViews()
+            status.text = "独立 BLE 扫描中：不认证，不上传。"
+            val seen = mutableSetOf<String>()
+            withTimeoutOrNull(15_000) {
+                scanXiaomiDevices(this@BandInstallActivity).collect { candidate ->
+                    if (seen.add(candidate.address)) bleDevices.addView(Button(this@BandInstallActivity).apply {
+                        text = "${candidate.name} · ${candidate.address} · ${candidate.rssi} dBm"
+                        isEnabled = false
+                        setOnClickListener { diagnose(candidate) }
+                    })
+                }
+            }
+            status.text = "独立 BLE 扫描结束：${seen.size} 个候选。未认证、未安装；与 Classic 安装流程独立。"
+        }
+    }
+    private fun diagnose(candidate: BleCandidate) {
+        if (!foreground || busy || dialog != null || session != null) return
+        if (!XiaomiBleProfile.BAND9PRO_NAME.matches(candidate.name)) {
+            status.text = "广播名不匹配，拒绝 BLE 诊断连接；FE95 是共享服务。"; return
+        }
+        showDialog("仅连接 BLE 诊断？", "${candidate.name}\n${candidate.address}\n只发现服务与协商 MTU，不认证、不写入表盘。广播名可伪造。", "连接诊断") {
+            launchOperation {
+                clearKeys()
+                val link = AndroidBleTransport(this@BandInstallActivity); bleLink = link
+                try {
+                    link.connect(candidate.device)
+                    val services = link.discoveredServices()
+                    status.text = "BLE 诊断完成：MTU ${link.mtu}，FE95=${XiaomiBleProfile.SERVICE in services}。已断开；这不是 Classic 认证，也不是安装成功。"
+                } finally { link.close(); if (bleLink === link) bleLink = null }
+            }
+        }
+    }
+    private fun stopMessage() = if (submitted && !confirmed)
+        "已取消并断开、清空密钥。安装请求可能已发送，设备结果未知；请在手环确认，勿自动或盲目重刷。"
+    else if (confirmed) "已断开并清空密钥。此前设备已确认安装并激活。"
+    else "已取消并断开、清空密钥。未确认安装；返回后需重新读取和认证。"
+    private fun stopFlow() {
+        synchronized(secretLock) { ++epoch }
+        pendingPermission = false; pendingBlePermission = false
+        bleLink?.close(); bleLink = null
+        dialog?.dismiss(); dialog = null
+        operation?.cancel(); operation = null
+        observer?.cancel(); observer = null
+        session?.close(); session = null
+        rootTask?.cancel(true); rootTask = null
+        clearKeys(); busy = false
+        sessionState.text = "Classic：CLOSED"
+        refresh()
+    }
+    override fun onStop() {
+        synchronized(secretLock) { foreground = false }
+        stopFlow(); status.text = stopMessage()
+        if (workFile == null) initialized = false
+        super.onStop()
+    }
+    override fun onDestroy() { executor.shutdownNow(); super.onDestroy() }
+    override fun onSaveInstanceState(outState: Bundle) {
+        workFile?.let { outState.putString(STATE_WORK_PATH, it.absolutePath) }
+        outState.putBoolean(STATE_SUBMITTED, submitted)
+        outState.putBoolean(STATE_CONFIRMED, confirmed)
+        super.onSaveInstanceState(outState)
+    }
+    private suspend fun renderSummary() {
+        val file = workFile ?: return
+        val info = withContext(Dispatchers.IO) { InstallConsent.capture(filesDir, file) }
+        summary.text = "私有工作副本：${info.name}\n当前 BIN ID：${info.id}\n大小：${info.size} 字节\nSHA-256：${info.sha256}\n型号兼容性 / 签名：未验证"
     }
     private fun privateSnapshot(path: String): File {
         val input = File(path).toPath()
@@ -188,55 +450,4 @@ class BandInstallActivity : ComponentActivity() {
             return WorkingCopyResult.privateFile(filesDir, result.path)
         } catch (e: Throwable) { result.delete(); throw e }
     }
-    private suspend fun renderSummary() {
-        val file = workFile ?: return
-        val info = withContext(Dispatchers.IO) { WatchfaceParser.inspect(file) }
-        summary.text = "私有工作副本：${file.name}\n格式：${info.format}\n当前 BIN ID：${info.id}\n大小：${file.length()} 字节\nSHA-256：${info.sha256}\n型号兼容性/签名：未验证"
-    }
-    private fun scan() {
-        stop(); candidates.clear(); devices.removeAllViews()
-        scanJob = lifecycleScope.launch {
-            status.text = "正在扫描，仅显示广播名匹配或带 FE95 服务的设备；广播名不等于身份认证。"
-            try {
-                withTimeoutOrNull(15_000) {
-                    scanXiaomiDevices(this@BandInstallActivity).collect { candidate ->
-                        if (candidates.put(candidate.address, candidate) == null) {
-                            devices.addView(Button(this@BandInstallActivity).apply {
-                                text = "${candidate.name}\n${candidate.address} · ${candidate.rssi} dBm"
-                                setOnClickListener { choose(candidate) }
-                            })
-                        }
-                    }
-                }
-                status.text = "扫描结束，${candidates.size} 个候选。未安装。9 Pro 也可能只通过经典蓝牙公布安装服务。"
-            } catch (e: Exception) { if (e is CancellationException) throw e; status.text = "扫描失败：${e.message}" }
-        }
-    }
-    private fun choose(candidate: BleCandidate) {
-        scanJob?.cancel()
-        if (!XiaomiBleProfile.BAND9PRO_NAME.matches(candidate.name)) {
-            status.text = "型号广播名不匹配，拒绝连接。FE95 是共享服务，不证明是手环 9 Pro。"; return
-        }
-        AlertDialog.Builder(this).setTitle("仅连接诊断？")
-            .setMessage("${candidate.name}\n${candidate.address}\n只发现服务并协商 MTU，不开启认证/上传，不修改表盘。广播名可伪造。")
-            .setNegativeButton("取消", null).setPositiveButton("连接诊断") { _, _ ->
-                connectionJob = lifecycleScope.launch {
-                    val link = AndroidBleTransport(this@BandInstallActivity); transport = link
-                    try {
-                        status.text = "连接诊断中…"
-                        link.connect(candidate.device)
-                        val services = link.discoveredServices()
-                        status.text = "服务发现完成，MTU ${link.mtu}，FE95=${XiaomiBleProfile.SERVICE in services}。已断开。\n${XiaomiBleProfile.BLOCK_REASON}"
-                    } catch (e: Exception) { if (e is CancellationException) throw e; status.text = "诊断失败：${e.message}。未安装。" }
-                    finally { link.close(); if (transport === link) transport = null }
-                }
-            }.show()
-    }
-    private fun stop() { scanJob?.cancel(); connectionJob?.cancel(); transport?.close(); transport = null }
-    override fun onSaveInstanceState(outState: Bundle) {
-        workFile?.let { outState.putString(STATE_WORK_PATH, it.absolutePath) }
-        super.onSaveInstanceState(outState)
-    }
-    override fun onStop() { stop(); super.onStop() }
-    override fun onDestroy() { stop(); super.onDestroy() }
 }
