@@ -87,6 +87,18 @@ class RootPolicyTest {
         assertFalse(fields.any { it.endsWith("other.txt") })
     }
 
+    @Test fun descriptorChecksUseParentShellProcPathNotChildSelf() {
+        val command = RootPolicy.readCommand(RootPolicy.roots.first() + "/a.bin")
+        val parentFd = "/proc/\$\$/fd/3"
+        assertFalse("child commands may close FD 3 on exec", command.contains("/proc/self/fd/3"))
+        assertEquals("all three descriptor checks must use the owning shell PID", 3,
+            command.windowed(parentFd.length).count { it == parentFd })
+        assertTrue(command.contains("readlink -f $parentFd"))
+        assertTrue(command.contains("[ -f $parentFd ]"))
+        assertTrue(command.contains("stat -L -c %s $parentFd"))
+        assertTrue(command.contains("exec cat <&3"))
+    }
+
     @Test fun pinsDescriptorInsteadOfReopeningPathAfterStat() {
         makeRoots()
         val path = RootPolicy.roots.first() + "/pinned.bin"

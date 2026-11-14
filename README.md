@@ -48,7 +48,7 @@ Shizuku ADB 模式通常为 UID 2000，不等于 root，不能借此读取其他
 
 验证分层：
 
-- 53 项纯 JVM JUnit 用例：原有14项 parser/文件复制测试，加39项 Root 路径策略、协议解析、超时/中断、stderr/exit 失败、特殊文件名及失败清理测试；使用模拟进程，不向系统授予权限。
+- 54 项纯 JVM JUnit 用例：原有14项 parser/文件复制测试，加40项 Root 路径策略、协议解析、超时/中断、stderr/exit 失败、特殊文件名及失败清理测试；使用模拟进程，不向系统授予权限。
 - Android Kotlin/Java/AIDL 编译检查。
 - GitHub CI 完整单元测试、Lint 与 Debug/Release 打包。
 - **没有手机或手环真机运行/刷写测试**。CI 成功不代表 BLE、OEM 文件权限或设备安装经过实测。

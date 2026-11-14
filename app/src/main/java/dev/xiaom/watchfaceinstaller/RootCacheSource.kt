@@ -95,11 +95,11 @@ object RootPolicy {
             [ -f "${'$'}p" ] && [ -r "${'$'}p" ] || fail '文件不存在或读取被拒绝'
             # Pin the opened file; never re-open the pathname after checking it.
             exec 3< "${'$'}p" || fail '打开文件失败'
-            opened=${'$'}(readlink -f /proc/self/fd/3) || fail '无法验证已打开文件'
+            opened=${'$'}(readlink -f /proc/${'$'}${'$'}/fd/3) || fail '无法验证已打开文件'
             [ "${'$'}opened" = "${'$'}resolved" ] || fail '打开期间路径已改变'
             case "${'$'}opened" in "${'$'}base"/*) ;; *) fail '已打开文件越界';; esac
-            [ -f /proc/self/fd/3 ] || fail '只允许普通文件'
-            size=${'$'}(stat -L -c %s /proc/self/fd/3) || fail 'stat 失败'
+            [ -f /proc/${'$'}${'$'}/fd/3 ] || fail '只允许普通文件'
+            size=${'$'}(stat -L -c %s /proc/${'$'}${'$'}/fd/3) || fail 'stat 失败'
             [ "${'$'}size" -le 33554432 ] || fail '文件超过 32 MiB'
             exec cat <&3
         """.trimIndent()

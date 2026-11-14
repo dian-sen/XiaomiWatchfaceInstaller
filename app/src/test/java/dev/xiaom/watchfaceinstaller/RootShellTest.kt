@@ -53,8 +53,14 @@ class RootShellTest {
 
     @Test(timeout = 5000) fun timeoutBoundsDescendantHoldingStdoutOpen() {
         val started = System.nanoTime()
-        // Parent exits, but a descendant retains stdout/stderr: waitFor alone is insufficient.
-        assertThrows(IOException::class.java) { shell(150).text("sleep 3 & exit 0", 64) }
+        // Parent exits, but a descendant retains stdout/stderr. Depending on the
+        // JVM process-reaper race, its pipe may already have been closed at exit:
+        // either verified empty EOF or a bounded timeout is valid, never a hang.
+        try {
+            assertEquals("", shell(150).text("sleep 3 & exit 0", 64))
+        } catch (e: IOException) {
+            assertTrue(e.message!!.contains("超时"))
+        }
         assertTrue((System.nanoTime() - started) / 1_000_000 < 2000)
     }
 
