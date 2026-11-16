@@ -23,7 +23,10 @@ internal class WatchfaceCacheFixture(val directory: File) {
     fun jpeg() = byteArrayOf(255.toByte(), 216.toByte(), 255.toByte(), 1, 2, 3)
     fun link(path: String, target: File) = Files.createSymbolicLink(mapped(path).toPath(), target.toPath())
     fun shell(timeout: Long = System.getenv("WATCHFACE_TEST_TIMEOUT_MS")?.toLong() ?: 5000, prefix: String = "") = WatchfaceCacheRootShell(timeout) { command ->
-        var translated = prefix + command.replace(anchor, storage.path)
+        // Simulate the privileged reader's identity only inside this ordinary-file fixture.
+        // GitHub runners are unprivileged; no real su or device command is used.
+        val identity = "id() { if test \"\$1\" = -u; then printf '0\\n'; else command id \"\$@\"; fi; }\n"
+        var translated = identity + prefix + command.replace(anchor, storage.path)
         if (command == WatchfaceCacheRootPolicy.scanCommand()) {
             // Restore source paths only in scan records, never in BIN/XML/image bytes.
             translated = "set -o pipefail\n{\n$translated\n} | sed 's|${storage.path}|$anchor|g'"
