@@ -157,6 +157,7 @@ jobs:
           assert "sdkVersion:'26'" in text, 'Unexpected APK minSdk'
           assert "native-code: 'arm64-v8a'" in text, 'Unexpected APK ABI'
           PY
+          python3 tool/verify_apk_abi.py "$APK" --abi arm64-v8a
       - name: Prepare versioned assets
         id: assets
         shell: bash

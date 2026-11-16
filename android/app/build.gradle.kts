@@ -52,8 +52,10 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        when (val abi = System.getenv("PERSONAL_ABI")) {
-            null, "", "all" -> Unit
+        // Flutter supplies a broad default list. Adding to that list does not restrict it.
+        ndk.abiFilters.clear()
+        when (val abi = System.getenv("PERSONAL_ABI")?.takeIf { it.isNotBlank() } ?: "arm64-v8a") {
+            "all" -> ndk.abiFilters.addAll(setOf("arm64-v8a", "armeabi-v7a", "x86_64"))
             "arm64-v8a", "armeabi-v7a", "x86_64" -> ndk.abiFilters.add(abi)
             else -> error("Unsupported PERSONAL_ABI: $abi")
         }

@@ -70,6 +70,7 @@ if "$verify_android"; then
   }
   python3 tool/verify_native.py
   flutter build apk --debug --no-pub --target-platform android-arm64
+  python3 tool/verify_apk_abi.py build/app/outputs/flutter-apk/app-debug.apk --abi arm64-v8a
   (
     cd android
     ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest :app:lintDebug :xms-wearable-lib:testDebugUnitTest :xms-wearable-lib:lintDebug --stacktrace
