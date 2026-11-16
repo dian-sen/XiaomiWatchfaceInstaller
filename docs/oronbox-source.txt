@@ -1,0 +1,5 @@
+Source: https://github.com/dian-sen/OronBox
+Commit: 706fe8714cae2d1dc22fe0baa035a6852b49ef8e
+License: AGPL-3.0-or-later
+XMS cleanroom submodule: 6483f939785e9c1dd011465d573931f669a6adab
+Original native implementation: legacy-android/

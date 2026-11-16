@@ -1,0 +1,15 @@
+# Flutter embedding and the engine's plugin registry are accessed reflectively.
+-keep class io.flutter.** { *; }
+-keep class io.flutter.plugins.** { *; }
+
+# package:jni (transitive) loads its Java helpers reflectively from native code.
+-keep class com.github.dart_lang.jni.** { *; }
+
+# The engine's deferred-component manager references Play Core classes that are
+# only present when using Play Feature Delivery; OronBox ships no dynamic
+# feature modules, so these references are dead code.
+-dontwarn com.google.android.play.core.**
+
+# Shizuku instantiates its UserService by its manifest-independent class name.
+-keep class org.zxor.oronbox.WatchfaceCacheShizukuService { *; }
+-keep class org.zxor.oronbox.IWatchfaceCacheShizukuService$Stub { *; }
