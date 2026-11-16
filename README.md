@@ -4,6 +4,8 @@
 
 当前重构版本为 `0.8.0+13`，Android 包名保留 `dev.xiaom.watchfaceinstaller`。原 Kotlin 工程完整保留在 [`legacy-android/`](legacy-android/)；新应用使用 Flutter/Riverpod 与已有设备协议，Android 原生层负责受限缓存读取和 Root 密钥快照。
 
+已发布通过完整验证的 **[ARM64 APK · build-24-bb70f27](https://github.com/dian-sen/XiaomiWatchfaceInstaller/releases/tag/build-24-bb70f27)**，最低 Android 8.0。此包签名与旧版相同；下载后独立验签、ZIP/ELF 和实际 ARM64 架构检查通过。SHA-256：`cbc9fa7aa9932c1063defc02d603c34e3c4fd12af7f07075ffbf6ce46f92145d`。完整记录见 [`docs/refactor-verification.md`](docs/refactor-verification.md)。真机登录、Root/Shizuku 缓存访问和手环安装仍待实测。
+
 ## 功能与入口
 
 | 入口 | 功能 |

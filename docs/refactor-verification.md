@@ -1,6 +1,8 @@
 # Watchface Studio 0.8.0 重构验收记录
 
-日期：2026-11-16。目标仓库：dian-sen/XiaomiWatchfaceInstaller；原基线 ab72fa0 (0.7.4 / 12)。此记录为本地实现与离线验收，不代表 APK 完整打包或设备兼容性认证。
+日期：2026-11-16。目标仓库：dian-sen/XiaomiWatchfaceInstaller；原基线 ab72fa0 (0.7.4 / 12)。用户已批准公开迁入源码及自动签名发布。产品提交 bb70f275c022bc8e037747bdb015114063890a49 已完成云端构建、单测、Lint、签名发布和下载后的独立验签；真机运行及设备兼容性仍待实测。
+
+最终运行：[43859163198](https://github.com/dian-sen/XiaomiWatchfaceInstaller/actions/runs/43859163198)，verify / release 均 success。成品：[build-24-bb70f27](https://github.com/dian-sen/XiaomiWatchfaceInstaller/releases/tag/build-24-bb70f27)。
 
 ## 实现范围
 
@@ -24,9 +26,12 @@
 | 最终统一功能回归 | bash tool/ci_verify.sh退出0，143项Flutter测试通过 |
 | ADB 导出器 | 8项Python离线测试通过；Python实际导出包→Dart实际导入互通通过，不连接真实手机 |
 | 原生缓存 | 仓库内run_jvm_tests.sh实际执行，72项JUnit测试通过 |
-| 原生API编译 | Root/Shizuku缓存实现通过Android API编译；AIDL使用签名桩，此检查不代替Gradle AIDL生成 |
+| 原生API编译 | 本地窄编译及云端真实Kotlin/AIDL编译通过；云端D8/R8、资源打包和调试/发布APK均成功 |
 | 密钥桥编译 | DeviceKeyBridge/RootAuthKeySource/AuthKeyRecord以实际Flutter embedding和Android API编译成功 |
-| 密钥模型 | 6项JUnit合成数据测试通过，含密钥清零、字段验证与固定shell语法 |
+| 密钥模型 | 6项JUnit合成数据测试通过，含密钥清零、字段验证与固定shell语法；云端app:testDebugUnitTest通过 |
+| Android验收 | app / xms-wearable-lib 的单测与Lint通过，未忽略Lint错误 |
+| 真实APK架构 | ZIP/ELF逐库检查通过，仅13个arm64-v8a库；另有3项JIT/AOT及错误ABI反例测试通过 |
+| 下载后独立验签 | Google apksig9.0.1验证v2通过；证书与旧版build-9-b87e790相同 |
 | CI脚本 | actionlint、bash语法、Python语法检查通过；签名缺失时在解码/编译前拒绝发布 |
 | 源码差异 | 暂存差异git diff --check通过；固定XMS gitlink6483f939785e9c1dd011465d573931f669a6adab |
 
@@ -36,9 +41,15 @@
 
 审查指出安全存储的读取失败回退、重置后旧数据恢复及迁移中断残留问题。已修复：读取异常直接中止；已有权威vault时不降级覆盖；重置提交并验证持久化空vault；成功读取后重试旧来源清理。新增相应失败/重启/中断回归通过。记住的用户名密码纳入系统安全存储；只读device.info不返回密钥明文，设备信息页掩码显示。
 
-## 尚需实际构建或设备验证
+## 最终APK身份
 
-- 此时尚未公开推送迁入源码，未执行GitHub完整Android构建、真实AIDL生成、D8/R8/资源打包及最终APK验签。
+- 包名dev.xiaom.watchfaceinstaller，名称Watchface Studio，版本0.8.0+13，minSdk26 / targetSdk36；非debuggable，禁止系统备份。
+- 大小57,876,118bytes；SHA-256：cbc9fa7aa9932c1063defc02d603c34e3c4fd12af7f07075ffbf6ce46f92145d。
+- 证书SHA-256：d96417b1091218fcb8b5b946ea988597ea3853fb2428ab92f43c5698fe710ff9；独立v2验签通过，v3未启用。
+- 成品来自bb70f27；旧build-22-f628370曾夹带其他架构依赖，已在879c3b4/bb70f27收紧过滤并增加实际ZIP/ELF校验，应下载build-24-bb70f27。
+
+## 尚需设备验证
+
 - 尚未验证旧版本同证书覆盖升级、真机启动、小米/华米在线登录、Root提示、Shizuku授权/服务存活、真实官方缓存访问和手表安装。
 - Root密钥读取仅固定支持n67cn，不能宣称适配所有型号。
 - ADB仅为电脑导出路径；应用内无线调试配对不在本版本实现。
@@ -46,4 +57,4 @@
 
 ## 公开交付边界
 
-将迁入的核心源码推送公开仓库意味着公开私有OronBox对应源码快照。保留来源/附加条款，不包含仓库Secrets、设备真实密钥或签名材料。现有Actions的main推送会在验证成功后用既有Secrets生成签名ARM64预发布Release；发布失败不得宣称已交付APK。公开推送需用户明确确认此范围。
+用户已明确批准公开迁入私有OronBox对应核心源码并用既有签名配置发布。源码、README、来源/附加条款已推送公开仓库，不包含仓库Secrets、设备真实密钥或签名材料。main推送在验证成功后生成签名ARM64预发布Release，本次构建和发布已实际成功。
