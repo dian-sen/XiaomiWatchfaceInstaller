@@ -2,9 +2,9 @@
 
 基于 **OronBox · OrPudding · https://github.com/OronCanopy/OronBox** 的独立修改版，面向小米与华米穿戴设备的本地表盘工作台。本项目由 dian-sen 维护，不是 OronBox、小米或华米的官方版本。
 
-当前重构版本为 `0.8.0+13`，Android 包名保留 `dev.xiaom.watchfaceinstaller`。原 Kotlin 工程完整保留在 [`legacy-android/`](legacy-android/)；新应用使用 Flutter/Riverpod 与已有设备协议，Android 原生层负责受限缓存读取和 Root 密钥快照。
+当前版本为 `0.8.1+14`，Android 包名保留 `dev.xiaom.watchfaceinstaller`。原 Kotlin 工程完整保留在 [`legacy-android/`](legacy-android/)；新应用使用 Flutter/Riverpod 与已有设备协议，Android 原生层负责受限缓存读取和 Root 密钥快照。
 
-已发布通过完整验证的 **[ARM64 APK · build-24-bb70f27](https://github.com/dian-sen/XiaomiWatchfaceInstaller/releases/tag/build-24-bb70f27)**，最低 Android 8.0。此包签名与旧版相同；下载后独立验签、ZIP/ELF 和实际 ARM64 架构检查通过。SHA-256：`cbc9fa7aa9932c1063defc02d603c34e3c4fd12af7f07075ffbf6ce46f92145d`。完整记录见 [`docs/refactor-verification.md`](docs/refactor-verification.md)。真机登录、Root/Shizuku 缓存访问和手环安装仍待实测。
+0.8.1 更新说明及路径核实见 [`docs/release-0.8.1.md`](docs/release-0.8.1.md)。最低 Android 8.0，发布沿用原签名；下载见 **[Releases](https://github.com/dian-sen/XiaomiWatchfaceInstaller/releases)**。此前 0.8.0 的完整验收记录保留在 [`docs/refactor-verification.md`](docs/refactor-verification.md)。真机登录、Root/Shizuku 缓存访问、表盘安装和固件刷写仍待实测。
 
 ## 功能与入口
 
@@ -39,8 +39,8 @@ Root 权限属于本应用自身；Minis、ADB 或其他应用拥有权限不等
 
 1. 选择 **Root** 或 **Shizuku**。
 2. 点击 **授权并检查访问**，按系统或 Root 管理器提示授权；Shizuku 模式需先启动 Shizuku。
-3. 点击扫描，选择候选 `resource.bin`，等待生成私有副本。
-4. 核对 BIN ID、名称、预览和警告，再重命名或修改 ID。
+3. 点击扫描，仅列出精确命名为 `resource.bin` 的候选，`1.bin` 等其他文件不显示。
+4. 选择候选后先决定保留 ID 或修改随机 ID，再核对处理后 BIN 的名称、预览和警告。
 5. 导出 BIN、预览图或包含当前副本与预览的 ZIP。源缓存始终只读。
 
 固定扫描根目录：
@@ -75,9 +75,15 @@ python3 tool/adb_watchface_export.py --serial SERIAL \
 
 - 名称用于导出文件名，支持中文，过滤分隔符、控制字符和保留名称，不改写不透明 BIN 内容。
 - 支持已识别完整 Xiaomi BIN 的 9 / 12 位数字 ID。等长修改仅更改 ID；扩展到 12 位时要求目标区域全部为零填充，拒绝覆盖其他字节。
-- 编辑始终创建内存副本，原文件和官方缓存不变。ID 修改不修复签名、校验或不同机型资源，也不能保证设备接受。
-- 安装继续执行原始 ID 和当前 ID 的已有策略，不因重命名或改 ID 清除限制。
+- 导入后先选择保留 ID 或生成随机 ID。修改时实际覆写应用私有导入副本，读回校验后以新 BIN 重新检测和安装；后续编辑同样先替换副本。文件选择器原文件和官方缓存不变。
+- 随机 ID 保持现有 9/12 位字段宽度；后续检测以修改后 BIN 为准。ID 修改不修复签名、校验或不同机型资源，也不能保证设备接受。
 - 连接就绪、加入队列或上传 100% 均不直接等于设备安装成功。真实型号 / 固件兼容性需要对应真机验证。
+
+## 在线固件与表盘资料清理
+
+固件页恢复 [MiWearFirmwareArchives](https://github.com/AstralSightStudios/MiWearFirmwareArchives/releases) 在线查询及 GitHub 链接，按机型/地区选择完整包。下载长度和源提供的 SHA-256 通过后显示安装确认；队列固定目标设备，下载完成不表示刷写成功。暂未接入的设备会明确显示没有可用在线源。
+
+**设置 → 应用数据**提供“导入及修改后的表盘”和“表盘预览图”两项清理。它们位于系统 `filesDir/watchfaces` 与 `filesDir/previews`（主用户通常为 `/data/user/0/dev.xiaom.watchfaceinstaller/files/`，`/data/data/...` 为常见别名），也覆盖旧 Kotlin 版遗留资料。清理前确认，显示占用大小；账号、密钥、固件、导出的外部文件及队列安装副本保留。
 
 ## 构建与验证
 

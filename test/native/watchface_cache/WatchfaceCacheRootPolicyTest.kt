@@ -43,12 +43,14 @@ class WatchfaceCacheRootPolicyTest {
         assertTrue(scan(fixture).diagnostics.any { it.code == "LINK" && it.path == fixture.root })
     }
 
-    @Test fun scansUppercaseHiddenAndQuotedNamesWithoutExpandingShellMetacharacters() {
+    @Test fun scansOnlyResourceBinWithinHiddenAndQuotedDirectories() {
         val fixture = fixture().apply { roots() }
         val marker = File(fixture.directory, "injected")
-        val special = fixture.root + "/中'\" \$(touch injected); `touch injected`\n.BIN"
+        val special = fixture.root + "/中'\" \$(touch injected); `touch injected`\n/resource.bin"
         fixture.file(special, "actual".toByteArray())
-        fixture.file(fixture.root + "/.hidden.BIN", "hidden".toByteArray())
+        fixture.file(fixture.root + "/.hidden/resource.bin", "hidden".toByteArray())
+        fixture.file(fixture.root + "/1.bin", "skip".toByteArray())
+        fixture.file(fixture.root + "/RESOURCE.BIN", "skip".toByteArray())
         fixture.file(fixture.root + "/other.txt", "text".toByteArray())
         val result = scan(fixture)
         assertEquals(2, result.files.size)
@@ -99,16 +101,16 @@ class WatchfaceCacheRootPolicyTest {
 
     @Test fun limitDiagnosticsDistinguishSizeDepthAndFileCount() {
         val fixture = fixture().apply { roots() }
-        val oversized = fixture.file(fixture.root + "/oversized.bin", ByteArray(0))
+        val oversized = fixture.file(fixture.root + "/oversized/resource.bin", ByteArray(0))
         RandomAccessFile(oversized, "rw").use { it.setLength(WatchfaceCacheRootPolicy.MAX_BIN_BYTES + 1) }
         val deep = fixture.root + "/" + (1..9).joinToString("/") { "d$it" }
-        fixture.file("$deep/deep.bin", "data".toByteArray())
+        fixture.file("$deep/resource.bin", "data".toByteArray())
         val sizeDepth = scan(fixture)
         assertTrue(sizeDepth.truncated)
         assertTrue(sizeDepth.diagnostics.any { it.code == "LIMIT" && it.reason == "size" })
         assertTrue(sizeDepth.diagnostics.any { it.code == "LIMIT" && it.reason == "depth" })
-        assertFalse(sizeDepth.files.any { it.path.endsWith("deep.bin") })
-        for (index in 0..200) fixture.file(fixture.root + "/$index.bin", "data".toByteArray())
+        assertFalse(sizeDepth.files.any { it.path.startsWith("$deep/") })
+        for (index in 0..200) fixture.file(fixture.root + "/$index/resource.bin", "data".toByteArray())
         val limited = scan(fixture)
         assertEquals(200, limited.files.size)
         assertTrue(limited.diagnostics.any { it.code == "LIMIT" && it.reason == "files" })

@@ -6667,4 +6667,40 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get cacheChooseSource => 'Check access before scanning the cache';
+
+  @override
+  String get watchfaceImportIdTitle => 'Change the watchface ID?';
+
+  @override
+  String watchfaceImportIdDescription(String id) {
+    return 'Current ID: $id\nChoose a random ID to replace the imported BIN before detection and installation.';
+  }
+
+  @override
+  String get watchfaceImportKeepId => 'Keep ID';
+
+  @override
+  String get watchfaceImportRandomId => 'Use random ID';
+
+  @override
+  String get appDataWatchfaces => 'Imported and edited watchfaces';
+
+  @override
+  String get appDataWatchfacesDescription =>
+      'Private BIN copies, including files with a modified ID';
+
+  @override
+  String get appDataWatchfacePreviews => 'Watchface previews';
+
+  @override
+  String get appDataWatchfacePreviewsDescription =>
+      'Images recognized from imported or cached watchfaces';
+
+  @override
+  String get appDataWatchfaceClearDescription =>
+      'Remove the selected private watchface files. Exported files, accounts, device keys and queued installation copies are kept.';
+
+  @override
+  String get firmwareDownloadVerifying =>
+      'Downloading and verifying the full firmware package…';
 }

@@ -29,6 +29,7 @@ class _InstallLocalPageState extends ConsumerState<InstallLocalPage> {
   XFile? _file;
   int? _fileSize;
   bool _installing = false;
+  bool _watchfaceIdPrepared = false;
   double _progress = 0;
   String? _error;
 
@@ -46,6 +47,7 @@ class _InstallLocalPageState extends ConsumerState<InstallLocalPage> {
     setState(() {
       _fileName = file.name;
       _file = selected;
+      _watchfaceIdPrepared = false;
       _fileSize = selectedSize;
       _error = null;
       _progress = 0;
@@ -69,6 +71,14 @@ class _InstallLocalPageState extends ConsumerState<InstallLocalPage> {
         ref: ref,
         selectedType: _selectedType,
         file: file,
+        watchfaceIdPrepared: _watchfaceIdPrepared,
+        onWatchfacePrepared: (prepared) {
+          if (!mounted) return;
+          setState(() {
+            _file = prepared;
+            _watchfaceIdPrepared = true;
+          });
+        },
       );
       if (!mounted) return;
       if (enqueued) {

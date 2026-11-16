@@ -40,7 +40,7 @@ internal class RootWatchfaceCacheReader(
         val result = WatchfaceCacheScanProtocol.parse(
             read(WatchfaceCacheRootPolicy.scanCommand(), WatchfaceCacheRootPolicy.MAX_SCAN_BYTES),
         )
-        val files = result.files.map { source ->
+        val files = result.files.filter { it.path.substringAfterLast('/') == "resource.bin" }.map { source ->
             val token = UUID.randomUUID().toString()
             sources[token] = source
             val root = WatchfaceCacheRootPolicy.validateBin(source.path)

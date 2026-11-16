@@ -16,7 +16,7 @@ void main() {
     });
     expect(scan.files, hasLength(1));
     expect(scan.files.single.token, 'scan-token');
-    expect(scan.files.single.name, 'face.bin');
+    expect(scan.files.single.name, 'resource.bin');
     expect(scan.files.single.location, 'download/WatchFace');
     expect(scan.files.single.size, 1024);
     expect(scan.files.single.modifiedAt.millisecondsSinceEpoch, 1700000000000);
@@ -26,6 +26,18 @@ void main() {
     expect(scan.diagnostics.single.reason, 'read');
     expect(() => scan.files.clear(), throwsUnsupportedError);
     expect(() => scan.diagnostics.clear(), throwsUnsupportedError);
+  });
+
+  test('only exact resource.bin entries survive cache scan decoding', () {
+    final scan = WatchfaceCacheScan.fromPlatform({
+      'files': [
+        _entry(),
+        {..._entry(), 'name': '1.bin', 'token': 'other'},
+        {..._entry(), 'name': 'RESOURCE.BIN', 'token': 'upper'},
+        {..._entry(), 'name': 'myresource.bin', 'token': 'suffix'},
+      ],
+    });
+    expect(scan.files.map((file) => file.name), ['resource.bin']);
   });
 
   test('keeps legacy scans without diagnostics compatible', () {
@@ -287,7 +299,7 @@ void main() {
 
 Map<String, Object?> _entry() => {
   'token': 'scan-token',
-  'name': 'face.bin',
+  'name': 'resource.bin',
   'location': 'download/WatchFace',
   'size': 1024,
   'modifiedAt': 1700000000000,

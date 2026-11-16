@@ -1,5 +1,6 @@
 import 'package:oronbox/src/core/storage/app_data_directory.dart';
 import 'package:oronbox/src/features/devices/health/health_store.dart';
+import 'package:oronbox/src/features/resources/services/watchface_local_store.dart';
 
 import 'app_data_inventory_stub.dart'
     if (dart.library.io) 'app_data_inventory_io.dart'
@@ -18,6 +19,8 @@ enum AppDataCategory {
   models,
   tasks,
   documents,
+  watchfaces,
+  watchfacePreviews,
 }
 
 class AppDataUsage {
@@ -49,6 +52,11 @@ Future<List<AppDataUsage>> collectAppDataInventory() async {
       (sizes[AppDataCategory.models] ?? 0) +
       (await runtime.files(includeTemporary: true))
           .fold<int>(0, (n, f) => n + f.bytes);
+  final watchfaces = WatchfaceLocalStore();
+  sizes[AppDataCategory.watchfaces] = await watchfaces.bytes(previews: false);
+  sizes[AppDataCategory.watchfacePreviews] = await watchfaces.bytes(
+    bins: false,
+  );
   return [
     for (final category in AppDataCategory.values)
       AppDataUsage(category, sizes[category]),

@@ -57,7 +57,7 @@ def source_root(path):
 def candidate(path):
     source_root(path)
     parts = path.split('/')
-    return (parts[-1].lower() == 'resource.bin' and
+    return (parts[-1] == 'resource.bin' and
             not any(p.lower() in ('resources', '_lua') for p in parts[:-1]))
 
 

@@ -16,8 +16,15 @@ import 'package:oronbox/src/features/devices/health/health_store.dart';
 
 import 'app_data_inventory.dart';
 
+import 'package:oronbox/src/features/resources/services/watchface_local_store.dart';
+
 Future<void> cleanupApplicationDataCategory(AppDataCategory category) async {
   switch (category) {
+    case AppDataCategory.watchfaces:
+      await WatchfaceLocalStore().clear(previews: false);
+    case AppDataCategory.watchfacePreviews:
+      await WatchfaceLocalStore().clear(bins: false);
+      PaintingBinding.instance.imageCache.clear();
     case AppDataCategory.health:
       await HealthStore.maintenance(() async {
         await HealthStore.clearActivityFiles();

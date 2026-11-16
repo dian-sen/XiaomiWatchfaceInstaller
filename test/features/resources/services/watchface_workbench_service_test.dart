@@ -159,7 +159,7 @@ void main() {
         );
         final document = await service.importCache(_entry());
         expect(document.id, '123456789012');
-        expect(document.name, 'selected');
+        expect(document.name, 'resource');
         await service.dispose();
       },
     );
@@ -454,7 +454,7 @@ Uint8List _png() =>
 
 WatchfaceCacheFile _entry() => WatchfaceCacheFile(
   token: 'opaque-token',
-  name: 'selected.bin',
+  name: 'resource.bin',
   location: 'download/WatchFace',
   size: 0xa8,
   modifiedAt: DateTime.fromMillisecondsSinceEpoch(1700000000000),

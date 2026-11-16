@@ -1,7 +1,8 @@
-import 'package:oronbox/src/core/constants/app_constants.dart';
 import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:dio/dio.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:oronbox/src/app/generated/app_localizations.dart';
@@ -12,12 +13,10 @@ import 'package:oronbox/src/app/widgets/page_container.dart';
 import 'package:oronbox/src/app/widgets/release_notes_view.dart';
 import 'package:oronbox/src/app/widgets/sys_app_bar.dart';
 import 'package:oronbox/src/core/constants/style_constants.dart';
-import 'package:oronbox/src/data/community/community_source.dart';
 import 'package:oronbox/src/device/core/device_kind.dart';
 import 'package:oronbox/src/features/devices/controllers/device_manager.dart';
 import 'package:oronbox/src/features/devices/services/firmware_catalog.dart';
-import 'package:oronbox/src/features/resources/domain/community_resource.dart';
-import 'package:oronbox/src/features/resources/services/download_queue_notifier.dart';
+import 'package:oronbox/src/features/devices/services/firmware_download_service.dart';
 import 'package:oronbox/src/features/resources/services/resource_install_service.dart';
 import 'package:oronbox/src/features/resources/widgets/resource_install_confirmation.dart';
 
@@ -34,16 +33,27 @@ class _DeviceFirmwarePageState extends ConsumerState<DeviceFirmwarePage> {
   bool _sourceUnavailable = false;
   bool _installingUpdate = false;
   String? _error;
+  double _downloadProgress = 0;
+  CancelToken? _downloadCancellation;
   List<FirmwareRelease> _releases = const [];
+  String? _releaseDevice;
+
+  String? _deviceKey() {
+    final state = ref.read(deviceManagerProvider);
+    final device = state.currentDevice;
+    return device == null
+        ? null
+        : '${device.addr}:${device.codename}:${state.systemInfo?.model}';
+  }
 
   @override
   void initState() {
     super.initState();
-    if (!AppConstants.personalBuild) Future.microtask(_checkForUpdates);
+    Future.microtask(_checkForUpdates);
   }
 
   Future<void> _checkForUpdates() async {
-    if (AppConstants.personalBuild) return;
+    if (!mounted) return;
     final manager = ref.read(deviceManagerProvider.notifier);
     final state = ref.read(deviceManagerProvider);
     final device = state.currentDevice;
@@ -54,6 +64,7 @@ class _DeviceFirmwarePageState extends ConsumerState<DeviceFirmwarePage> {
       _error = null;
     });
     final systemInfo = state.systemInfo;
+    final queryDevice = _deviceKey();
     try {
       final releases = await ref
           .read(firmwareCatalogProvider)
@@ -65,8 +76,9 @@ class _DeviceFirmwarePageState extends ConsumerState<DeviceFirmwarePage> {
               currentVersion: systemInfo?.firmwareVersion ?? '',
             ),
           );
-      if (!mounted) return;
+      if (!mounted || _deviceKey() != queryDevice) return;
       setState(() {
+        _releaseDevice = queryDevice;
         _releases = releases;
         _checked = true;
       });
@@ -89,66 +101,73 @@ class _DeviceFirmwarePageState extends ConsumerState<DeviceFirmwarePage> {
     }
   }
 
-  Future<void> _downloadLatest(
-    FirmwareRelease release, {
-    bool fullPackage = false,
-  }) async {
-    final state = ref.read(deviceManagerProvider);
-    final device = state.currentDevice;
-    final codename = device?.codename ?? '';
-    final currentVersion = state.systemInfo?.firmwareVersion ?? '';
-    final package = fullPackage
-        ? release.fullPackage
-        : release.packageFor(currentVersion);
-    final detail = CommunityResourceDetail(
-      ref: ResourceRef(
-        source: CommunitySourceId.astroboxRepo,
-        id: package.fileName,
-      ),
-      name: package.fileName,
-      type: CommunityResourceType.firmware,
-      paidType: CommunityPaidType.free,
-      authors: const [],
-      supportedDevices: codename.isEmpty ? const {} : {codename},
-      content: const CommunityResourceContent(
-        format: ResourceContentFormat.plainText,
-        value: '',
-      ),
-      files: [
-        CommunityResourceFile(
-          id: package.fileName,
-          fileName: package.fileName,
-          version: release.version,
-          downloadUrl: package.downloadUrl,
-          size: package.size,
-        ),
-      ],
-      version: release.version,
-      summary: release.releaseNotes ?? '',
-      canDownload: true,
-    );
-    ref
-        .read(downloadQueueProvider.notifier)
-        .enqueue(
-          resource: detail,
-          file: detail.files.first,
-          codename: codename,
-        );
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(AppLocalizations.of(context)!.downloadTaskAdded)),
-    );
+  @override
+  void dispose() {
+    _downloadCancellation?.cancel();
+    super.dispose();
   }
 
-  Future<void> _installLatest(FirmwareRelease release) async {
+  Future<void> _downloadLatest(FirmwareRelease release) async {
     if (_installingUpdate) return;
-    setState(() => _installingUpdate = true);
+    final target = ref.read(deviceManagerProvider).currentDevice;
+    final targetModel = ref.read(deviceManagerProvider).systemInfo?.model;
+    if (target == null || _releaseDevice != _deviceKey()) return;
+    final downloader = ref.read(firmwareDownloadServiceProvider);
+    final cancel = CancelToken();
+    _downloadCancellation = cancel;
+    setState(() {
+      _installingUpdate = true;
+      _downloadProgress = 0;
+      _error = null;
+    });
+    String? path;
     try {
-      await _downloadLatest(release);
+      // Every online action uses the complete package, regardless of the
+      // device's current version or availability of incremental assets.
+      path = await downloader.downloadFull(
+        release.fullPackage,
+        cancelToken: cancel,
+        onProgress: (progress) {
+          if (mounted) setState(() => _downloadProgress = progress);
+        },
+      );
+      if (!mounted) return;
+      final current = ref.read(deviceManagerProvider);
+      if (current.currentDevice?.addr != target.addr ||
+          current.currentDevice?.codename != target.codename ||
+          current.systemInfo?.model != targetModel) {
+        throw StateError(
+          'Device changed during firmware download; check updates again',
+        );
+      }
+      await confirmAndEnqueueResourceFile(
+        context: context,
+        ref: ref,
+        file: downloader.open(path),
+        selectedType: LocalDeviceInstallType.firmware,
+        canEnqueue: () => mounted && _releaseDevice == _deviceKey(),
+        targetDevice: target.addr,
+      );
+    } catch (error) {
+      if (mounted && !(error is DioException && CancelToken.isCancel(error))) {
+        setState(
+          () => _error = localizedErrorMessage(
+            AppLocalizations.of(context)!,
+            error,
+          ),
+        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(_error!)));
+      }
     } finally {
+      if (path != null) await downloader.release(path);
+      _downloadCancellation = null;
       if (mounted) setState(() => _installingUpdate = false);
     }
   }
+
+  Future<void> _installLatest(FirmwareRelease release) =>
+      _downloadLatest(release);
 
   Future<void> _installLocal() async {
     final file = await pickFileData(
@@ -172,9 +191,12 @@ class _DeviceFirmwarePageState extends ConsumerState<DeviceFirmwarePage> {
     final state = ref.watch(deviceManagerProvider);
     final device = state.currentDevice;
     final currentVersion = state.systemInfo?.firmwareVersion.trim() ?? '';
-    final latest = _releases.firstOrNull;
-    final history = _releases.length > 1
-        ? _releases.skip(1).toList(growable: false)
+    final releases = _releaseDevice == _deviceKey()
+        ? _releases
+        : const <FirmwareRelease>[];
+    final latest = releases.firstOrNull;
+    final history = releases.length > 1
+        ? releases.skip(1).toList(growable: false)
         : const <FirmwareRelease>[];
     final hasUpdate =
         latest != null &&
@@ -199,6 +221,15 @@ class _DeviceFirmwarePageState extends ConsumerState<DeviceFirmwarePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                TextButton.icon(
+                  onPressed: () => launchUrl(
+                    Uri.parse(
+                      'https://github.com/AstralSightStudios/MiWearFirmwareArchives/releases',
+                    ),
+                  ),
+                  icon: const Icon(Icons.open_in_new),
+                  label: const Text('GitHub · MiWearFirmwareArchives'),
+                ),
                 SectionHeader(title: l10n.firmwareCurrentVersion),
                 Text(
                   currentVersion.isEmpty
@@ -211,8 +242,9 @@ class _DeviceFirmwarePageState extends ConsumerState<DeviceFirmwarePage> {
                   children: [
                     Expanded(child: Text(_statusText(l10n, latest, hasUpdate))),
                     TextButton.icon(
-                      onPressed: AppConstants.personalBuild || _checking
-                          ? null : _checkForUpdates,
+                      onPressed: _checking || _installingUpdate
+                          ? null
+                          : _checkForUpdates,
                       icon: _checking
                           ? const SizedBox.square(
                               dimension: 16,
@@ -228,9 +260,9 @@ class _DeviceFirmwarePageState extends ConsumerState<DeviceFirmwarePage> {
                   children: [
                     Expanded(
                       child: FilledButton.tonalIcon(
-                        onPressed: latest == null
+                        onPressed: latest == null || _installingUpdate
                             ? null
-                            : () => _downloadLatest(latest, fullPackage: true),
+                            : () => _downloadLatest(latest),
                         icon: const Icon(Icons.download_outlined),
                         label: Text(l10n.firmwareDownloadLatestFull),
                       ),
@@ -238,13 +270,23 @@ class _DeviceFirmwarePageState extends ConsumerState<DeviceFirmwarePage> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: FilledButton.tonalIcon(
-                        onPressed: device == null ? null : _installLocal,
+                        onPressed: device == null || _installingUpdate
+                            ? null
+                            : _installLocal,
                         icon: const Icon(Icons.folder_open_outlined),
                         label: Text(l10n.localFirmwareInstall),
                       ),
                     ),
                   ],
                 ),
+                if (_installingUpdate) ...[
+                  const SizedBox(height: 16),
+                  LinearProgressIndicator(
+                    value: _downloadProgress > 0 ? _downloadProgress : null,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(l10n.firmwareDownloadVerifying),
+                ],
                 const SizedBox(height: 28),
                 SectionHeader(title: l10n.firmwareLatestRelease),
                 const SizedBox(height: 8),
@@ -318,7 +360,9 @@ class _DeviceFirmwarePageState extends ConsumerState<DeviceFirmwarePage> {
                               IconButton(
                                 tooltip: l10n.download,
                                 icon: const Icon(Icons.download_outlined),
-                                onPressed: () => _downloadLatest(release),
+                                onPressed: _installingUpdate
+                                    ? null
+                                    : () => _downloadLatest(release),
                               ),
                             ],
                           ),

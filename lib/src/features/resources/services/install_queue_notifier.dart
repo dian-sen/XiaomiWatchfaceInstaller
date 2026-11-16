@@ -219,6 +219,7 @@ class InstallQueueNotifier extends Notifier<InstallQueueState> {
     required LocalDeviceInstallType type,
     required ResourceInstallMode installMode,
     String? identifier,
+    String? targetDevice,
   }) async {
     if (kIsWeb) {
       final bytes = await file.readAsBytes();
@@ -244,6 +245,7 @@ class InstallQueueNotifier extends Notifier<InstallQueueState> {
         params: {
           'type': type.name,
           'installMode': installMode.name,
+          if (targetDevice != null) 'device': targetDevice,
           if (identifier != null && identifier.isNotEmpty)
             'identifier': identifier,
           'path': path,

@@ -243,7 +243,7 @@ void main() {
   );
 
   test(
-    'install queues the edited snapshot without committing a save',
+    'install commits the replaced BIN before confirmation and queueing',
     () async {
       final service = _Service()..picked = _document();
       final controller = WatchfaceWorkbenchController(service);
@@ -258,41 +258,47 @@ void main() {
         return true;
       });
 
-      expect(queued, same(edited));
-      expect(controller.document, same(original));
+      expect(queued!.bytes, edited.bytes);
+      expect(queued!.originalId, edited.id);
+      expect(controller.document, same(queued));
+      expect(controller.document!.bytes, edited.bytes);
       expect(controller.enqueued, isTrue);
     },
   );
 
   for (final kind in [WatchfaceExportKind.bin, WatchfaceExportKind.bundle]) {
-    test('saving $kind cannot clear a restricted original ID', () async {
-      final original = _document(id: '120912345678');
-      final service = _Service()..picked = original;
-      final controller = WatchfaceWorkbenchController(service);
-      addTearDown(controller.dispose);
-      await controller.pickLocal();
-      final edited = original.edit(name: 'Saved', id: '987654321012');
+    test(
+      'install rechecks the saved replacement BIN after editing its ID',
+      () async {
+        final original = _document(id: '120912345678');
+        final service = _Service()..picked = original;
+        final controller = WatchfaceWorkbenchController(service);
+        addTearDown(controller.dispose);
+        await controller.pickLocal();
+        final edited = original.edit(name: 'Saved', id: '987654321012');
 
-      await controller.exportDocument(edited, kind: kind);
-      expect(controller.exportResult, WatchfaceExportResult.saved);
-      expect(controller.document, same(edited));
-      expect(controller.document!.originalId, '120912345678');
-      var installs = 0;
-      await controller.install(
-        controller.document!.edit(name: 'Install', id: '987654321'),
-        (_) async {
-          installs++;
-          return true;
-        },
-      );
+        await controller.exportDocument(edited, kind: kind);
+        expect(controller.exportResult, WatchfaceExportResult.saved);
+        expect(controller.document, same(edited));
+        expect(controller.document!.originalId, '120912345678');
+        var installs = 0;
+        await controller.install(
+          controller.document!.edit(name: 'Install', id: '987654321'),
+          (_) async {
+            installs++;
+            return true;
+          },
+        );
 
-      expect(installs, 0);
-      expect(controller.error, isA<WatchfaceInstallBlockedException>());
-      expect(controller.failedAction, WatchfaceWorkbenchAction.installing);
-      expect(controller.enqueued, isFalse);
-      expect(controller.busy, isFalse);
-      expect(controller.document, same(edited));
-    });
+        expect(installs, 1);
+        expect(controller.error, isNull);
+        expect(controller.failedAction, isNull);
+        expect(controller.enqueued, isTrue);
+        expect(controller.busy, isFalse);
+        expect(controller.document!.id, '987654321');
+        expect(controller.document!.originalId, '987654321');
+      },
+    );
   }
 
   test('rejects a newly restricted payload before invoking enqueue', () async {
@@ -317,7 +323,7 @@ void main() {
     expect(controller.failedAction, WatchfaceWorkbenchAction.installing);
     expect(controller.enqueued, isFalse);
     expect(controller.busy, isFalse);
-    expect(controller.document, same(original));
+    expect(controller.document!.id, '120912345678');
 
     await controller.install(original, enqueue);
     expect(installs, 1);

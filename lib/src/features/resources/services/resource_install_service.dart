@@ -323,7 +323,11 @@ class ResourceInstallService {
         payload: analysis.payload,
         identifier: identifierOverride,
         analyzedIdentifier: analysis.identifier,
-        fallbackIdentifier: _guessWatchfaceId(fileName),
+        fallbackIdentifier:
+            analysis.identifier == null &&
+                extractVelaWatchfaceId(analysis.payload) == null
+            ? _guessWatchfaceId(fileName)
+            : null,
       );
       if (restrictedId != null) {
         _log.warning(

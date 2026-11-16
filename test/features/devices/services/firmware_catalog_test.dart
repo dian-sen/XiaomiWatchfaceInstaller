@@ -5,6 +5,59 @@ import 'package:oronbox/src/features/devices/services/firmware_catalog.dart';
 
 void main() {
   test(
+    'follows release pagination and preserves an exact regional codename',
+    () async {
+      final pages = <int>[];
+      final dio = Dio();
+      dio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            final page = options.queryParameters['page'] as int;
+            pages.add(page);
+            handler.resolve(
+              Response<List<dynamic>>(
+                requestOptions: options,
+                headers: Headers.fromMap(
+                  page == 1
+                      ? {
+                          'link': ['<https://api.github.com/next>; rel="next"'],
+                        }
+                      : {},
+                ),
+                data: page == 1
+                    ? [
+                        _release(
+                          product: 'miwear.watch.n67cn',
+                          version: 'v9.0.0',
+                        ),
+                      ]
+                    : [
+                        _release(
+                          product: 'miwear.watch.n67gl',
+                          version: 'v2.0.1',
+                        ),
+                      ],
+              ),
+            );
+          },
+        ),
+      );
+      final releases = await DeviceFirmwareCatalog(dio).findUpdates(
+        const FirmwareCatalogQuery(
+          kind: DeviceKind.xiaomi,
+          codename: 'n67gl',
+          model: '',
+          currentVersion: '2.0.0',
+        ),
+      );
+      expect(pages, [1, 2]);
+      expect(releases.single.version, '2.0.1');
+      expect(releases.single.fileName, startsWith('miwear.watch.n67gl_'));
+      dio.close();
+    },
+  );
+
+  test(
     'falls back from the n67 codename to the available n67cn release',
     () async {
       final dio = Dio();

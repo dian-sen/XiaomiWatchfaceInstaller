@@ -13,6 +13,9 @@ import 'package:oronbox/src/features/resources/controllers/watchface_workbench_c
 import 'package:oronbox/src/features/resources/services/resource_install_service.dart';
 import 'package:oronbox/src/features/resources/services/watchface_cache_import_service.dart';
 import 'package:oronbox/src/features/resources/services/watchface_document.dart';
+import 'package:oronbox/src/features/resources/services/watchface_bin_import.dart';
+import 'package:oronbox/src/features/resources/services/watchface_local_store.dart';
+import 'package:oronbox/src/features/resources/widgets/watchface_random_id_dialog.dart';
 import 'package:oronbox/src/features/resources/services/watchface_workbench_service.dart';
 import 'package:oronbox/src/features/resources/widgets/resource_install_confirmation.dart';
 import 'package:oronbox/src/features/resources/widgets/watchface_workbench_editor.dart';
@@ -46,15 +49,27 @@ class _WatchfaceWorkbenchPageState
   void initState() {
     super.initState();
     _controller = WatchfaceWorkbenchController(
-      widget.service ?? WatchfaceWorkbenchService(),
+      widget.service ??
+          WatchfaceWorkbenchService(
+            localStore: WatchfaceLocalStore(),
+            prepareBin: (bytes, name) => prepareWatchfaceBinBytes(
+              bytes,
+              name,
+              requestRandomId: (id) async =>
+                  mounted ? requestWatchfaceRandomId(context, id) : null,
+            ),
+          ),
     );
     final initialFile = widget.initialFile;
     if (initialFile != null) {
-      unawaited(
-        widget.releaseInitialFile
-            ? _controller.importOpenedFile(initialFile)
-            : _controller.importFile(initialFile),
-      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        unawaited(
+          widget.releaseInitialFile
+              ? _controller.importOpenedFile(initialFile)
+              : _controller.importFile(initialFile),
+        );
+      });
     }
   }
 
@@ -76,6 +91,7 @@ class _WatchfaceWorkbenchPageState
           ref: ref,
           file: XFile.fromData(document.bytes, name: document.binFileName),
           selectedType: LocalDeviceInstallType.watchface,
+          watchfaceIdPrepared: true,
         ),
       ),
     );

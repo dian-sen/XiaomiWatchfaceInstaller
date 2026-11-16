@@ -44,8 +44,7 @@ class PersonalBuildInterceptor extends Interceptor {
     final repository = '${segments[offset]}/${segments[offset + 1]}';
     return repository == 'oroncanopy/oronbox' ||
         repository == 'astralsightstudios/astrobox-repo' ||
-        repository == 'astralsightstudios/astrobox-plugin-repo' ||
-        repository == 'astralsightstudios/miwearfirmwarearchives';
+        repository == 'astralsightstudios/astrobox-plugin-repo';
   }
 
   @override

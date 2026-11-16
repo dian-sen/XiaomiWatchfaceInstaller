@@ -6331,6 +6331,39 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get cacheChooseSource => '请先检查授权，再扫描缓存';
+
+  @override
+  String get watchfaceImportIdTitle => '是否修改为随机 ID？';
+
+  @override
+  String watchfaceImportIdDescription(String id) {
+    return '当前 ID：$id\n选择随机 ID 后，将先用新 BIN 替换本次导入内容，再进行检测和安装。';
+  }
+
+  @override
+  String get watchfaceImportKeepId => '保留原 ID';
+
+  @override
+  String get watchfaceImportRandomId => '修改随机 ID';
+
+  @override
+  String get appDataWatchfaces => '导入及修改后的表盘';
+
+  @override
+  String get appDataWatchfacesDescription => '清理私有 BIN 副本，包括修改 ID 后的文件';
+
+  @override
+  String get appDataWatchfacePreviews => '表盘预览图';
+
+  @override
+  String get appDataWatchfacePreviewsDescription => '清理从导入及缓存表盘中识别的图片';
+
+  @override
+  String get appDataWatchfaceClearDescription =>
+      '删除所选表盘私有资料。已导出的文件、账号、设备密钥及已入队的安装副本均保留。';
+
+  @override
+  String get firmwareDownloadVerifying => '正在下载并校验完整固件包…';
 }
 
 /// The translations for Chinese, as used in Taiwan (`zh_TW`).
@@ -11996,4 +12029,40 @@ class AppLocalizationsZhTw extends AppLocalizationsZh {
 
   @override
   String get cacheChooseSource => '请先检查授权，再扫描缓存';
+
+  @override
+  String get watchfaceImportIdTitle => 'Change the watchface ID?';
+
+  @override
+  String watchfaceImportIdDescription(String id) {
+    return 'Current ID: $id\nChoose a random ID to replace the imported BIN before detection and installation.';
+  }
+
+  @override
+  String get watchfaceImportKeepId => 'Keep ID';
+
+  @override
+  String get watchfaceImportRandomId => 'Use random ID';
+
+  @override
+  String get appDataWatchfaces => 'Imported and edited watchfaces';
+
+  @override
+  String get appDataWatchfacesDescription =>
+      'Private BIN copies, including files with a modified ID';
+
+  @override
+  String get appDataWatchfacePreviews => 'Watchface previews';
+
+  @override
+  String get appDataWatchfacePreviewsDescription =>
+      'Images recognized from imported or cached watchfaces';
+
+  @override
+  String get appDataWatchfaceClearDescription =>
+      'Remove the selected private watchface files. Exported files, accounts, device keys and queued installation copies are kept.';
+
+  @override
+  String get firmwareDownloadVerifying =>
+      'Downloading and verifying the full firmware package…';
 }

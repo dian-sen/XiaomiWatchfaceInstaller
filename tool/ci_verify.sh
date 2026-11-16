@@ -26,6 +26,20 @@ analysis_targets=(
   lib/src/app/layout
   lib/src/app/oronbox_app.dart
   lib/src/features/workbench
+  lib/src/features/resources/services/resource_install_service.dart
+  lib/src/features/resources/services/install_queue_notifier.dart
+  lib/src/features/resources/services/watchface_bin_import.dart
+  lib/src/features/resources/services/watchface_local_store.dart
+  lib/src/features/resources/widgets/watchface_random_id_dialog.dart
+  lib/src/features/resources/widgets/resource_install_confirmation.dart
+  lib/src/features/devices/pages/install/install_local_page.dart
+  lib/src/features/devices/pages/firmware/device_firmware_page.dart
+  lib/src/features/devices/services/firmware_catalog.dart
+  lib/src/features/devices/services/firmware_download_service.dart
+  lib/src/features/settings/pages/app_data_page.dart
+  lib/src/features/settings/application/app_data_inventory.dart
+  lib/src/features/settings/application/app_data_cleanup.dart
+  lib/src/core/network/personal_build_interceptor.dart
   lib/src/features/devices/pages/keys
   lib/src/core/services/private_app_state.dart
   lib/src/command_bus/local_command_bus.dart
@@ -44,6 +58,11 @@ analysis_targets=(
 )
 test_targets=(
   test/features/workbench
+  test/features/resources/services/watchface_replacement_install_test.dart
+  test/features/resources/services/watchface_bin_import_test.dart
+  test/features/resources/services/watchface_local_store_test.dart
+  test/features/devices/services/firmware_catalog_test.dart
+  test/features/devices/services/firmware_download_service_test.dart
   test/core/services/private_app_state_test.dart
   test/personal
   test/features/accounts/services/mi_account_service_test.dart

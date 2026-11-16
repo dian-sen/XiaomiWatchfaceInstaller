@@ -33,7 +33,7 @@ class WatchfaceWorkbenchSources extends StatelessWidget {
     final l10n = AppLocalizations.of(context)!;
     final colors = Theme.of(context).colorScheme;
     final result = scan;
-    final files = [...?result?.files]
+    final files = [...?result?.files.where((file) => file.name == 'resource.bin')]
       ..sort((a, b) => b.modifiedAt.compareTo(a.modifiedAt));
     final diagnostics = result?.diagnostics ?? const [];
     final codes = diagnostics.map((item) => item.code).toSet();

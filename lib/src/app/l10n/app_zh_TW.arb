@@ -2577,5 +2577,22 @@
   "cacheReady": "访问方式已就绪",
   "cacheAccessFailed": "访问失败，请检查授权和服务状态",
   "cacheRootHint": "通过本应用申请 Root，只读扫描固定的官方缓存目录",
-  "cacheChooseSource": "请先检查授权，再扫描缓存"
+  "cacheChooseSource": "请先检查授权，再扫描缓存",
+  "watchfaceImportIdTitle": "Change the watchface ID?",
+  "watchfaceImportIdDescription": "Current ID: {id}\nChoose a random ID to replace the imported BIN before detection and installation.",
+  "@watchfaceImportIdDescription": {
+    "placeholders": {
+      "id": {
+        "type": "String"
+      }
+    }
+  },
+  "watchfaceImportKeepId": "Keep ID",
+  "watchfaceImportRandomId": "Use random ID",
+  "appDataWatchfaces": "Imported and edited watchfaces",
+  "appDataWatchfacesDescription": "Private BIN copies, including files with a modified ID",
+  "appDataWatchfacePreviews": "Watchface previews",
+  "appDataWatchfacePreviewsDescription": "Images recognized from imported or cached watchfaces",
+  "appDataWatchfaceClearDescription": "Remove the selected private watchface files. Exported files, accounts, device keys and queued installation copies are kept.",
+  "firmwareDownloadVerifying": "Downloading and verifying the full firmware package…"
 }

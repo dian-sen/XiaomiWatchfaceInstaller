@@ -73,7 +73,7 @@ void main() {
           'https://api.github.com/repos/AstralSightStudios/MiWearFirmwareArchives/releases',
         ),
       ),
-      AppConstants.personalBuild,
+      isFalse,
     );
     expect(
       PersonalBuildInterceptor.blocks(

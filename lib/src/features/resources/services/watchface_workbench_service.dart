@@ -1,10 +1,13 @@
 import 'dart:typed_data';
 
 import 'package:cross_file/cross_file.dart';
+import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'watchface_bundle_import.dart';
+import 'watchface_bin_import.dart';
+import 'watchface_local_store.dart';
 import 'watchface_cache_import_service.dart';
 import 'watchface_document.dart';
 
@@ -27,6 +30,8 @@ class WatchfaceWorkbenchService {
     XFile Function(String path)? openFile,
     WatchfaceFileSaver? saveFile,
     bool? isWeb,
+    this.prepareBin,
+    this.localStore,
   }) : _cacheService = cacheService ?? WatchfaceCacheImportService(),
        _pickFile = pickFile ?? _pickBin,
        _openFile = openFile ?? XFile.new,
@@ -38,9 +43,12 @@ class WatchfaceWorkbenchService {
   final XFile Function(String path) _openFile;
   final WatchfaceFileSaver _saveFile;
   final bool _isWeb;
+  final WatchfaceBinPreparation? prepareBin;
+  final WatchfaceLocalStore? localStore;
   final Set<Future<WatchfaceDocument>> _imports = {};
   bool _disposed = false;
   String cacheMode = 'root';
+  String? _importKey;
 
   Future<WatchfaceDocument?> pickLocal() async {
     _ensureActive();
@@ -65,9 +73,14 @@ class WatchfaceWorkbenchService {
         bytes[1] == 0x4b &&
         bytes[2] == 0x03 &&
         bytes[3] == 0x04;
-    return isBundle || hasZipSignature
-        ? const WatchfaceBundleImport().importZip(bytes)
-        : WatchfaceDocument.importBin(bytes: bytes, fileName: file.name);
+    if (isBundle || hasZipSignature) {
+      return prepareDocument(const WatchfaceBundleImport().importZip(bytes));
+    }
+    final prepared = await _prepare(bytes, file.name);
+    return _remember(
+      WatchfaceDocument.importBin(bytes: prepared, fileName: file.name),
+      importKey: sha256.convert(bytes).toString(),
+    );
   }
 
   /// Releases only the private copy created by Android's open-with intent path.
@@ -89,6 +102,9 @@ class WatchfaceWorkbenchService {
 
   Future<WatchfaceDocument> importCache(WatchfaceCacheFile file) {
     _ensureActive();
+    if (file.name != 'resource.bin') {
+      throw const FormatException('Not a resource.bin cache entry');
+    }
     final future = _importCache(file);
     _imports.add(future);
     return future.whenComplete(() => _imports.remove(future));
@@ -134,24 +150,93 @@ class WatchfaceWorkbenchService {
       }
     }
     _ensureActive();
-    return WatchfaceDocument.importBin(
-      bytes: bytes,
-      fileName: file.name,
-      suggestedName: bundle.nameSource == 'filename' ? null : bundle.name,
-      previews: previews,
-      warnings: warnings,
+    final prepared = await _prepare(bytes, file.name);
+    return _remember(
+      WatchfaceDocument.importBin(
+        bytes: prepared,
+        fileName: file.name,
+        suggestedName: bundle.nameSource == 'filename' ? null : bundle.name,
+        previews: previews,
+        warnings: warnings,
+      ),
+      importKey: sha256.convert(bytes).toString(),
     );
   }
 
-  Future<WatchfaceExportResult> exportBin(WatchfaceDocument document) =>
-      _export(document.binFileName, 'application/octet-stream', document.bytes);
+  Future<Uint8List> _prepare(Uint8List bytes, String fileName) async {
+    final prepared = prepareBin == null
+        ? bytes
+        : await prepareBin!(bytes, fileName);
+    _ensureActive();
+    if (prepared == null) throw const WatchfaceImportCancelled();
+    return localStore == null
+        ? prepared
+        : await localStore!.replaceImportedBin(bytes, prepared);
+  }
 
-  Future<WatchfaceExportResult> exportBundle(WatchfaceDocument document) =>
-      _export(
-        '${document.name}.zip',
-        'application/zip',
-        document.exportArchive(),
-      );
+  Future<WatchfaceDocument> prepareDocument(WatchfaceDocument document) async {
+    final bytes = await _prepare(document.bytes, document.binFileName);
+    return _remember(
+      WatchfaceDocument.importBin(
+        bytes: bytes,
+        fileName: document.binFileName,
+        suggestedName: document.name,
+        previews: document.previews,
+        warnings: document.warnings,
+      ),
+      importKey: sha256.convert(document.bytes).toString(),
+    );
+  }
+
+  /// Persist edited bytes first; callers validate and install this new input.
+  Future<WatchfaceDocument> replaceDocument(WatchfaceDocument document) async {
+    _ensureActive();
+    final replacement = localStore == null
+        ? document.bytes
+        : await localStore!.replaceImportedBin(
+            document.bytes,
+            document.bytes,
+            importKey: _importKey,
+          );
+    _ensureActive();
+    return _remember(
+      WatchfaceDocument.importBin(
+        bytes: replacement,
+        fileName: document.binFileName,
+        suggestedName: document.name,
+        previews: document.previews,
+        warnings: document.warnings,
+      ),
+    );
+  }
+
+  Future<WatchfaceDocument> _remember(
+    WatchfaceDocument document, {
+    String? importKey,
+  }) async {
+    await localStore?.saveDocument(document, includeBin: false);
+    _ensureActive();
+    if (importKey != null) _importKey = importKey;
+    return document;
+  }
+
+  Future<WatchfaceExportResult> exportBin(WatchfaceDocument document) async {
+    await replaceDocument(document);
+    return _export(
+      document.binFileName,
+      'application/octet-stream',
+      document.bytes,
+    );
+  }
+
+  Future<WatchfaceExportResult> exportBundle(WatchfaceDocument document) async {
+    await replaceDocument(document);
+    return _export(
+      '${document.name}.zip',
+      'application/zip',
+      document.exportArchive(),
+    );
+  }
 
   Future<WatchfaceExportResult> exportPreview(
     WatchfaceDocument document,

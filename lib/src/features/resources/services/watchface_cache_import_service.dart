@@ -90,7 +90,11 @@ class WatchfaceCacheScan {
       throw const FormatException('Invalid cache scan');
     }
     return WatchfaceCacheScan(
-      files: List.unmodifiable(rawFiles.map(WatchfaceCacheFile.fromPlatform)),
+      files: List.unmodifiable(
+        rawFiles
+            .map(WatchfaceCacheFile.fromPlatform)
+            .where((file) => file.name == 'resource.bin'),
+      ),
       truncated: value['truncated'] == true,
       diagnostics: List.unmodifiable(
         rawDiagnostics.map(WatchfaceCacheDiagnostic.fromPlatform),
@@ -186,7 +190,9 @@ class WatchfaceCacheImportService {
     final result = await _channel.invokeMethod<Object?>('authorize', {
       'mode': mode,
     });
-    if (result != true) throw const FormatException('Access was not authorized');
+    if (result != true) {
+      throw const FormatException('Access was not authorized');
+    }
     return mode;
   }
 

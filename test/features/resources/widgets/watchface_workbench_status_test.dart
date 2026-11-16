@@ -95,7 +95,7 @@ void main() {
     },
   );
 
-  testWidgets('edited restricted ID shows the localized install refusal', (
+  testWidgets('replacement BIN keeps a restricted new ID blocked', (
     tester,
   ) async {
     final bytes = Uint8List(0xa8)
@@ -104,7 +104,7 @@ void main() {
     final edited = WatchfaceDocument.importBin(
       bytes: bytes,
       fileName: 'restricted.bin',
-    ).edit(name: 'Edited', id: '987654321012');
+    ).edit(name: 'Edited', id: '120998765432');
     final controller = WatchfaceWorkbenchController(_Service());
     addTearDown(controller.dispose);
     var installs = 0;

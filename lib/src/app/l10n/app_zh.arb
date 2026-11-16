@@ -2913,5 +2913,22 @@
   "cacheReady": "访问方式已就绪",
   "cacheAccessFailed": "访问失败，请检查授权和服务状态",
   "cacheRootHint": "通过本应用申请 Root，只读扫描固定的官方缓存目录",
-  "cacheChooseSource": "请先检查授权，再扫描缓存"
+  "cacheChooseSource": "请先检查授权，再扫描缓存",
+  "watchfaceImportIdTitle": "是否修改为随机 ID？",
+  "watchfaceImportIdDescription": "当前 ID：{id}\n选择随机 ID 后，将先用新 BIN 替换本次导入内容，再进行检测和安装。",
+  "@watchfaceImportIdDescription": {
+    "placeholders": {
+      "id": {
+        "type": "String"
+      }
+    }
+  },
+  "watchfaceImportKeepId": "保留原 ID",
+  "watchfaceImportRandomId": "修改随机 ID",
+  "appDataWatchfaces": "导入及修改后的表盘",
+  "appDataWatchfacesDescription": "清理私有 BIN 副本，包括修改 ID 后的文件",
+  "appDataWatchfacePreviews": "表盘预览图",
+  "appDataWatchfacePreviewsDescription": "清理从导入及缓存表盘中识别的图片",
+  "appDataWatchfaceClearDescription": "删除所选表盘私有资料。已导出的文件、账号、设备密钥及已入队的安装副本均保留。",
+  "firmwareDownloadVerifying": "正在下载并校验完整固件包…"
 }

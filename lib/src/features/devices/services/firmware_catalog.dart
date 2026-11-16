@@ -97,18 +97,25 @@ class DeviceFirmwareCatalog implements FirmwareCatalog {
 
     final products = _resolveProducts(query);
     if (products.isEmpty) return const [];
-    final response = await _dio.get<List<dynamic>>(
-      _releasesUrl,
-      queryParameters: const {'per_page': 100},
-      options: Options(
-        headers: const {
-          'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-      ),
-    );
+    final rawReleases = <dynamic>[];
+    for (var page = 1; page <= 20; page++) {
+      final response = await _dio.get<List<dynamic>>(
+        _releasesUrl,
+        queryParameters: {'per_page': 100, 'page': page},
+        options: Options(
+          headers: const {
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        ),
+      );
+      rawReleases.addAll(response.data ?? const []);
+      if (!(response.headers.value('link') ?? '').contains('rel="next"')) break;
+      if (page == 20) throw const FirmwareCatalogUnavailable();
+    }
     final releasesByProduct = <String, List<FirmwareRelease>>{};
-    for (final raw in response.data ?? const []) {
+    for (final raw in rawReleases) {
+      if (raw is Map && raw['draft'] == true) continue;
       if (raw is! Map) continue;
       final release = GitHubRelease.fromJson(raw.cast<String, Object?>());
       final name = release.name;
@@ -119,7 +126,13 @@ class DeviceFirmwareCatalog implements FirmwareCatalog {
       if (version.isEmpty) continue;
 
       final assets = release.assets
-          .where((asset) => asset.name.toLowerCase().endsWith('.bin'))
+          .where(
+            (asset) =>
+                asset.name.toLowerCase().startsWith(
+                  '${product}_v${version}_',
+                ) &&
+                asset.name.toLowerCase().endsWith('.bin'),
+          )
           .toList(growable: false);
       final fullAsset = _selectFullAsset(assets);
       final fullPackage = _packageFromAsset(fullAsset);
@@ -154,7 +167,16 @@ class DeviceFirmwareCatalog implements FirmwareCatalog {
     final codename = query.codename?.trim().toLowerCase();
     if (codename == null || codename.isEmpty) return const [];
     if (codename.contains('.watch.')) return [codename];
+    final exactAliases = [
+      for (final identity in xiaomiWearableIdentities.values)
+        for (final alias in identity.aliases)
+          if (alias.toLowerCase().endsWith('.watch.$codename'))
+            alias.toLowerCase(),
+    ];
     final identity = xiaomiWearableIdentityForCodename(codename);
+    if (codename != identity?.codename && exactAliases.isNotEmpty) {
+      return exactAliases.toSet().toList(growable: false);
+    }
     return (identity?.aliases ?? const <String>[])
         .map((alias) => alias.trim().toLowerCase())
         .where((alias) => alias.contains('.watch.'))

@@ -11991,6 +11991,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Check access before scanning the cache'**
   String get cacheChooseSource;
+
+  /// No description provided for @watchfaceImportIdTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Change the watchface ID?'**
+  String get watchfaceImportIdTitle;
+
+  /// No description provided for @watchfaceImportIdDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Current ID: {id}\nChoose a random ID to replace the imported BIN before detection and installation.'**
+  String watchfaceImportIdDescription(String id);
+
+  /// No description provided for @watchfaceImportKeepId.
+  ///
+  /// In en, this message translates to:
+  /// **'Keep ID'**
+  String get watchfaceImportKeepId;
+
+  /// No description provided for @watchfaceImportRandomId.
+  ///
+  /// In en, this message translates to:
+  /// **'Use random ID'**
+  String get watchfaceImportRandomId;
+
+  /// No description provided for @appDataWatchfaces.
+  ///
+  /// In en, this message translates to:
+  /// **'Imported and edited watchfaces'**
+  String get appDataWatchfaces;
+
+  /// No description provided for @appDataWatchfacesDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Private BIN copies, including files with a modified ID'**
+  String get appDataWatchfacesDescription;
+
+  /// No description provided for @appDataWatchfacePreviews.
+  ///
+  /// In en, this message translates to:
+  /// **'Watchface previews'**
+  String get appDataWatchfacePreviews;
+
+  /// No description provided for @appDataWatchfacePreviewsDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Images recognized from imported or cached watchfaces'**
+  String get appDataWatchfacePreviewsDescription;
+
+  /// No description provided for @appDataWatchfaceClearDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove the selected private watchface files. Exported files, accounts, device keys and queued installation copies are kept.'**
+  String get appDataWatchfaceClearDescription;
+
+  /// No description provided for @firmwareDownloadVerifying.
+  ///
+  /// In en, this message translates to:
+  /// **'Downloading and verifying the full firmware package…'**
+  String get firmwareDownloadVerifying;
 }
 
 class _AppLocalizationsDelegate

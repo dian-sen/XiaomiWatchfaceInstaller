@@ -14,7 +14,7 @@ Widget _wrap(Widget child) => MaterialApp(
 
 WatchfaceCacheFile _file(String token, DateTime modified) => WatchfaceCacheFile(
   token: token,
-  name: '$token.bin',
+  name: 'resource.bin',
   location: 'watchfaces/$token',
   size: 2048,
   modifiedAt: modified,
@@ -97,8 +97,12 @@ void main() {
     expect(find.textContaining('watchfaces/recent'), findsOneWidget);
     expect(find.textContaining('2/2/2026'), findsOneWidget);
     expect(
-      tester.getTopLeft(find.text('recent.bin')).dy,
-      lessThan(tester.getTopLeft(find.text('old.bin')).dy),
+      tester
+          .getTopLeft(find.byKey(const ValueKey('watchface-cache-recent')))
+          .dy,
+      lessThan(
+        tester.getTopLeft(find.byKey(const ValueKey('watchface-cache-old'))).dy,
+      ),
     );
     expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
     final candidate = find.byKey(const ValueKey('watchface-cache-recent'));

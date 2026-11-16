@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cross_file/cross_file.dart';
+import 'package:oronbox/src/features/resources/services/watchface_bin_import.dart';
 import 'package:flutter/foundation.dart';
 import 'package:oronbox/src/features/resources/services/watchface_cache_import_service.dart';
 import 'package:oronbox/src/features/resources/services/watchface_document.dart';
@@ -107,8 +108,12 @@ class WatchfaceWorkbenchController extends ChangeNotifier {
     WatchfaceDocument edited,
     Future<bool> Function(WatchfaceDocument document) enqueue,
   ) => _perform(WatchfaceWorkbenchAction.installing, () async {
-    edited.ensureInstallAllowed();
-    final result = await enqueue(edited);
+    final prepared = await service.replaceDocument(edited);
+    if (_disposed) return;
+    document = prepared;
+    documentRevision++;
+    prepared.ensureInstallAllowed();
+    final result = await enqueue(prepared);
     if (!_disposed) enqueued = result;
   });
 
@@ -125,6 +130,8 @@ class WatchfaceWorkbenchController extends ChangeNotifier {
     notifyListeners();
     try {
       await run();
+    } on WatchfaceImportCancelled {
+      // Keep the previous document after the user cancels the ID prompt.
     } catch (failure) {
       if (!_disposed) {
         error = failure;

@@ -152,7 +152,7 @@ jobs:
           python3 - "$RUNNER_TEMP/apk-badging.txt" <<'PY'
           import pathlib, re, sys
           text = pathlib.Path(sys.argv[1]).read_text()
-          assert re.search(r"package: name='dev\.xiaom\.watchfaceinstaller' versionCode='13' versionName='0\.8\.0'", text), 'Unexpected APK identity/version'
+          assert re.search(r"package: name='dev\.xiaom\.watchfaceinstaller' versionCode='14' versionName='0\.8\.1'", text), 'Unexpected APK identity/version'
           assert "application-label:'Watchface Studio'" in text, 'Unexpected APK label'
           assert "sdkVersion:'26'" in text, 'Unexpected APK minSdk'
           assert "native-code: 'arm64-v8a'" in text, 'Unexpected APK ABI'
@@ -170,7 +170,7 @@ jobs:
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           mkdir dist
           cp build/app/outputs/flutter-apk/app-release.apk "dist/XiaomiWatchfaceInstaller-$TAG-arm64-v8a.apk"
-          printf 'commit=%s\nrun=%s\nvariant=release\napplicationId=dev.xiaom.watchfaceinstaller\nversion=0.8.0+13\nflutter=%s\nflutter_commit=%s\nxms_commit=%s\nabi=arm64-v8a\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$FLUTTER_VERSION" "$FLUTTER_REVISION" "$XMS_REVISION" > dist/BUILD-INFO.txt
+          printf 'commit=%s\nrun=%s\nvariant=release\napplicationId=dev.xiaom.watchfaceinstaller\nversion=0.8.1+14\nflutter=%s\nflutter_commit=%s\nxms_commit=%s\nabi=arm64-v8a\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$FLUTTER_VERSION" "$FLUTTER_REVISION" "$XMS_REVISION" > dist/BUILD-INFO.txt
           (cd dist && sha256sum *.apk > SHA256SUMS.txt)
       - name: Publish verified assets
         env:
@@ -182,4 +182,4 @@ jobs:
           set -euo pipefail
           args=()
           if [[ "$PRERELEASE" == true ]]; then args+=(--prerelease); fi
-          gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TAG" --notes 'Watchface Studio 0.8.0 (13), built with Flutter 3.47.9. Signed ARM64 APK; minimum Android 8.0 (API 26). Automated checks do not establish device compatibility.' "${args[@]}"
+          gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TAG" --notes 'Watchface Studio 0.8.1 (14), built with Flutter 3.47.9. Signed ARM64 APK; minimum Android 8.0 (API 26). Automated checks do not establish device compatibility.' "${args[@]}"

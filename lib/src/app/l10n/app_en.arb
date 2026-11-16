@@ -3001,5 +3001,22 @@
   "cacheReady": "Access is ready",
   "cacheAccessFailed": "Access failed; check permission and service status",
   "cacheRootHint": "Request Root for this app to read fixed official cache folders",
-  "cacheChooseSource": "Check access before scanning the cache"
+  "cacheChooseSource": "Check access before scanning the cache",
+  "watchfaceImportIdTitle": "Change the watchface ID?",
+  "watchfaceImportIdDescription": "Current ID: {id}\nChoose a random ID to replace the imported BIN before detection and installation.",
+  "@watchfaceImportIdDescription": {
+    "placeholders": {
+      "id": {
+        "type": "String"
+      }
+    }
+  },
+  "watchfaceImportKeepId": "Keep ID",
+  "watchfaceImportRandomId": "Use random ID",
+  "appDataWatchfaces": "Imported and edited watchfaces",
+  "appDataWatchfacesDescription": "Private BIN copies, including files with a modified ID",
+  "appDataWatchfacePreviews": "Watchface previews",
+  "appDataWatchfacePreviewsDescription": "Images recognized from imported or cached watchfaces",
+  "appDataWatchfaceClearDescription": "Remove the selected private watchface files. Exported files, accounts, device keys and queued installation copies are kept.",
+  "firmwareDownloadVerifying": "Downloading and verifying the full firmware package…"
 }

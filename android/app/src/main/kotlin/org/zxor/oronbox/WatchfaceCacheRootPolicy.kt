@@ -216,7 +216,7 @@ internal object WatchfaceCacheRootPolicy {
               while [ -n "${'$'}rest" ]; do rest=${'$'}{rest#*/}; depth=${'$'}((depth+1)); case "${'$'}rest" in */*) ;; *) break;; esac; done
               if [ "${'$'}depth" -ge $MAX_DEPTH ]; then diagnostic LIMIT "${'$'}p" depth; fi
             elif [ -f "${'$'}p" ]; then
-              case "${'$'}p" in *.[bB][iI][nN]) ;; *) continue;; esac
+              case "${'$'}{p##*/}" in resource.bin) ;; *) continue;; esac
               # Exclude find's extra depth layer (used only to discover the depth boundary).
               relative=${'$'}{p#"${'$'}r"/}; rest=${'$'}relative; depth=1
               while [ "${'$'}{rest#*/}" != "${'$'}rest" ]; do rest=${'$'}{rest#*/}; depth=${'$'}((depth+1)); done

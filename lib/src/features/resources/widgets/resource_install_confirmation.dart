@@ -13,6 +13,9 @@ import 'package:oronbox/src/features/devices/controllers/device_manager.dart';
 import 'package:oronbox/src/features/resources/services/install_queue_notifier.dart';
 import 'package:oronbox/src/features/resources/services/resource_install_service.dart';
 import 'package:oronbox/src/features/resources/services/resource_payload_analyzer.dart';
+import 'package:oronbox/src/features/resources/services/watchface_bin_import.dart';
+import 'package:oronbox/src/features/resources/services/watchface_local_store.dart';
+import 'package:oronbox/src/features/resources/widgets/watchface_random_id_dialog.dart';
 
 enum _InstallDecision { cancel, selectedType, detectedType, forceDetectedType }
 
@@ -21,7 +24,35 @@ Future<bool> confirmAndEnqueueResourceFile({
   required WidgetRef ref,
   required XFile file,
   LocalDeviceInstallType? selectedType,
+  bool watchfaceIdPrepared = false,
+  ValueChanged<XFile>? onWatchfacePrepared,
+  bool Function()? canEnqueue,
+  String? targetDevice,
 }) async {
+  if (!watchfaceIdPrepared &&
+      (selectedType == null ||
+          selectedType == LocalDeviceInstallType.watchface)) {
+    Uint8List? original;
+    final prepared = await prepareWatchfaceBinFile(
+      file,
+      onOriginal: (bytes) => original = bytes,
+      requestRandomId: (id) async {
+        if (!context.mounted) return null;
+        return context.mounted ? requestWatchfaceRandomId(context, id) : null;
+      },
+    );
+    if (prepared == null || !context.mounted) return false;
+    if (original != null) {
+      final replacement = await prepared.readAsBytes();
+      final store = WatchfaceLocalStore();
+      final saved = await store.replaceImportedBin(original!, replacement);
+      file = XFile.fromData(saved, name: prepared.name);
+      onWatchfacePrepared?.call(file);
+    } else {
+      file = prepared;
+    }
+    watchfaceIdPrepared = original != null;
+  }
   final fileName = file.name;
   final fileLength = await file.length();
   final probe = await file
@@ -51,6 +82,7 @@ Future<bool> confirmAndEnqueueResourceFile({
     }
   }
   final canEditWatchfaceId =
+      !watchfaceIdPrepared &&
       analysis?.type == LocalDeviceInstallType.watchface &&
       analysis?.platform == ResourcePlatform.vela &&
       (selectedType == null ||
@@ -82,6 +114,11 @@ Future<bool> confirmAndEnqueueResourceFile({
       _InstallDecision.detectedType => ResourceInstallMode.automatic,
       _InstallDecision.cancel => ResourceInstallMode.automatic,
     };
+    if (canEnqueue != null && !canEnqueue()) {
+      throw StateError(
+        'Device changed before firmware installation; check updates again',
+      );
+    }
     final requestedId = watchfaceIdController?.text.trim();
     await ref
         .read(installQueueProvider.notifier)
@@ -89,6 +126,7 @@ Future<bool> confirmAndEnqueueResourceFile({
           file,
           type: effectiveType,
           installMode: installMode,
+          targetDevice: targetDevice,
           identifier: requestedId == null || requestedId.isEmpty
               ? analysis?.identifier
               : requestedId,

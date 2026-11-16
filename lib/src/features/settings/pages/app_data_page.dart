@@ -358,6 +358,8 @@ class _AppDataPageState extends ConsumerState<AppDataPage> {
       AppDataCategory.downloads,
       AppDataCategory.models,
       AppDataCategory.documents,
+      AppDataCategory.watchfaces,
+      AppDataCategory.watchfacePreviews,
     };
     if (!removable.contains(category)) return;
     final l10n = AppLocalizations.of(context)!;
@@ -368,6 +370,8 @@ class _AppDataPageState extends ConsumerState<AppDataPage> {
         content: Text(switch (category) {
           AppDataCategory.health => l10n.appDataClearHealthDescription,
           AppDataCategory.models => l10n.appDataClearModelsDescription,
+          AppDataCategory.watchfaces || AppDataCategory.watchfacePreviews =>
+            l10n.appDataWatchfaceClearDescription,
           _ => l10n.appDataClearCachedCategoryDescription,
         }),
         actions: [
@@ -398,6 +402,8 @@ class _AppDataPageState extends ConsumerState<AppDataPage> {
         AppDataCategory.models => l10n.appDataModels,
         AppDataCategory.tasks => l10n.appDataTasks,
         AppDataCategory.documents => l10n.appDataDocuments,
+        AppDataCategory.watchfaces => l10n.appDataWatchfaces,
+        AppDataCategory.watchfacePreviews => l10n.appDataWatchfacePreviews,
       };
 
   String _description(AppDataCategory category, AppLocalizations l10n) =>
@@ -413,6 +419,9 @@ class _AppDataPageState extends ConsumerState<AppDataPage> {
         AppDataCategory.models => l10n.appDataModelsDescription,
         AppDataCategory.tasks => l10n.appDataTasksDescription,
         AppDataCategory.documents => l10n.appDataDocumentsDescription,
+        AppDataCategory.watchfaces => l10n.appDataWatchfacesDescription,
+        AppDataCategory.watchfacePreviews =>
+          l10n.appDataWatchfacePreviewsDescription,
       };
 
   Text _descriptionText(String text) => Text(
@@ -426,7 +435,12 @@ class _AppDataPageState extends ConsumerState<AppDataPage> {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
     final visibleUsage = _usage
-        .where((usage) => (usage.bytes ?? 0) > 0)
+        .where(
+          (usage) =>
+              (usage.bytes ?? 0) > 0 ||
+              usage.category == AppDataCategory.watchfaces ||
+              usage.category == AppDataCategory.watchfacePreviews,
+        )
         .toList();
     final dataSections = <Widget>[
       if (_inventoryFailed && _usage.isEmpty)

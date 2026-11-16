@@ -100,7 +100,7 @@ class RootWatchfaceCacheReaderTest {
         reader.cleanupBundle(bundle["path"] as String)
     }
 
-    @Test fun invalidIdDoesNotBorrowXmlIdentityAndNonCandidateDoesNotReadMetadata() {
+    @Test fun invalidIdDoesNotBorrowXmlIdentityAndNonResourceBinIsHidden() {
         val f = fixture()
         f.file(f.bin, f.binBytes(idValue = ""))
         description(f)
@@ -112,10 +112,7 @@ class RootWatchfaceCacheReaderTest {
         reader.cleanupBundle(bundle["path"] as String)
         f.mapped(f.bin).delete()
         f.file(f.bin.replace("resource.bin", "other.bin"), f.binBytes())
-        val other = reader.copyBundle(selected(reader))
-        assertEquals("bin", other["nameSource"])
-        assertFalse(warnings(other).any { it.startsWith("DESCRIPTION") })
-        reader.cleanupBundle(other["path"] as String)
+        assertTrue(reader.scan().files.isEmpty())
     }
 
     @Test fun freshScanInvalidatesTokensAndFailedScanCannotLeaveStaleSelection() {
