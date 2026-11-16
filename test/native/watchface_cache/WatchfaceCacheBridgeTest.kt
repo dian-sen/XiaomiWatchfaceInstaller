@@ -173,11 +173,7 @@ class WatchfaceCacheBridgeTest {
         val switch = AtomicInteger()
         val shell = WatchfaceCacheRootShell(5000) { command ->
             if (switch.get() == 0) {
-                // Match fixture translation without touching real source roots.
-                val script = command.replace("/storage/emulated/0", f.storage.path)
-                val translated = if (command == WatchfaceCacheRootPolicy.scanCommand())
-                    "set -o pipefail\n{\n$script\n} | sed 's|${f.storage.path}|/storage/emulated/0|g'" else script
-                ProcessBuilder("bash", "-c", translated).start()
+                f.start(command)
             } else {
                 launches.incrementAndGet()
                 started.countDown()

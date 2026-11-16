@@ -22,7 +22,9 @@ internal class WatchfaceCacheFixture(val directory: File) {
     fun png() = byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10)
     fun jpeg() = byteArrayOf(255.toByte(), 216.toByte(), 255.toByte(), 1, 2, 3)
     fun link(path: String, target: File) = Files.createSymbolicLink(mapped(path).toPath(), target.toPath())
-    fun shell(timeout: Long = System.getenv("WATCHFACE_TEST_TIMEOUT_MS")?.toLong() ?: 5000, prefix: String = "") = WatchfaceCacheRootShell(timeout) { command ->
+    fun shell(timeout: Long = System.getenv("WATCHFACE_TEST_TIMEOUT_MS")?.toLong() ?: 5000, prefix: String = "") =
+        WatchfaceCacheRootShell(timeout) { command -> start(command, prefix) }
+    fun start(command: String, prefix: String = ""): Process {
         // Simulate the privileged reader's identity only inside this ordinary-file fixture.
         // GitHub runners are unprivileged; no real su or device command is used.
         val identity = "id() { if test \"\$1\" = -u; then printf '0\\n'; else command id \"\$@\"; fi; }\n"
@@ -31,7 +33,7 @@ internal class WatchfaceCacheFixture(val directory: File) {
             // Restore source paths only in scan records, never in BIN/XML/image bytes.
             translated = "set -o pipefail\n{\n$translated\n} | sed 's|${storage.path}|$anchor|g'"
         }
-        ProcessBuilder("bash", "-c", translated).directory(directory).start()
+        return ProcessBuilder("bash", "-c", translated).directory(directory).start()
     }
     fun reader(shell: WatchfaceCacheRootShell = shell()) = RootWatchfaceCacheReader(privateCache, shell)
 }
