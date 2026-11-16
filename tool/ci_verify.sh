@@ -72,6 +72,6 @@ if "$verify_android"; then
   flutter build apk --debug --no-pub --target-platform android-arm64
   (
     cd android
-    ./gradlew --no-daemon --max-workers=2 testDebugUnitTest lintDebug --stacktrace
+    ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest :app:lintDebug :xms-wearable-lib:testDebugUnitTest :xms-wearable-lib:lintDebug --stacktrace
   )
 fi
