@@ -92,8 +92,6 @@ class WatchfaceCacheShizukuService : IWatchfaceCacheShizukuService.Stub() {
     /** A caller that never drains its FD cannot retain the service's only worker indefinitely. */
     private fun writeBounded(output: ParcelFileDescriptor, bytes: ByteArray, deadline: Long) {
         val fd = output.fileDescriptor
-        val flags = Os.fcntlInt(fd, OsConstants.F_GETFL, 0)
-        Os.fcntlInt(fd, OsConstants.F_SETFL, flags or OsConstants.O_NONBLOCK)
         val poll = StructPollfd().apply { this.fd = fd; events = OsConstants.POLLOUT.toShort() }
         var offset = 0
         while (offset < bytes.size) {
@@ -101,12 +99,19 @@ class WatchfaceCacheShizukuService : IWatchfaceCacheShizukuService.Stub() {
             val remaining = (deadline - System.nanoTime()) / 1_000_000
             if (remaining <= 0) throw WatchfaceCacheException("SHIZUKU_TIMEOUT")
             try {
-                val count = Os.write(fd, bytes, offset, minOf(8192, bytes.size - offset))
+                poll.revents = 0
+                if (Os.poll(arrayOf(poll), minOf(remaining, 100).toInt()) == 0) continue
+                if (poll.revents.toInt() and (OsConstants.POLLERR or OsConstants.POLLHUP or OsConstants.POLLNVAL) != 0) {
+                    throw WatchfaceCacheException("SHIZUKU_IO")
+                }
+                if (poll.revents.toInt() and OsConstants.POLLOUT == 0) continue
+                // One writer, no descriptor exposed to the receiver for writing. A ready pipe
+                // accepts an atomic <= PIPE_BUF (4096) chunk without blocking on API 26+.
+                val count = Os.write(fd, bytes, offset, minOf(4096, bytes.size - offset))
                 if (count <= 0) throw WatchfaceCacheException("SHIZUKU_IO")
                 offset += count
             } catch (error: ErrnoException) {
                 if (error.errno != OsConstants.EAGAIN && error.errno != OsConstants.EINTR) throw error
-                Os.poll(arrayOf(poll), minOf(remaining, 100).toInt())
             }
         }
     }

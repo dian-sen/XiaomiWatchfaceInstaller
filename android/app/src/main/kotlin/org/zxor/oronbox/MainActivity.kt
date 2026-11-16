@@ -1344,14 +1344,12 @@ class MainActivity : FlutterActivity() {
             return
         }
         try {
-            val takeFlags = (data?.flags ?: 0) and
-                (Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            if (takeFlags and Intent.FLAG_GRANT_READ_URI_PERMISSION == 0) {
+            val grantedFlags = data.flags
+            if (grantedFlags and Intent.FLAG_GRANT_READ_URI_PERMISSION == 0) {
                 result.error("READ_FAILED", "Read permission was not granted", null)
                 return
             }
-            contentResolver.takePersistableUriPermission(treeUri, takeFlags)
+            contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             getPreferences(Context.MODE_PRIVATE)
                 .edit()
                 .putString(WEARABLE_LOG_DIRECTORY_PREF, treeUri.toString())
