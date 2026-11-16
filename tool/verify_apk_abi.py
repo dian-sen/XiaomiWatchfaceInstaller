@@ -5,7 +5,7 @@ import struct
 import zipfile
 
 
-def verify(apk: Path, expected: set[str]) -> int:
+def verify(apk: Path, expected: set[str], *, debug: bool = False) -> int:
     architectures = {'arm64-v8a': (2, 183), 'armeabi-v7a': (1, 40), 'x86_64': (2, 62)}
     if not expected or not expected <= architectures.keys():
         raise ValueError('Unsupported expected architecture')
@@ -17,7 +17,8 @@ def verify(apk: Path, expected: set[str]) -> int:
         if {n.split('/')[1] for n in libraries} != expected:
             raise ValueError('APK contains native libraries outside the requested ABIs')
         for abi in expected:
-            for name in ('libapp.so', 'libflutter.so'):
+            required = ('libflutter.so',) if debug else ('libapp.so', 'libflutter.so')
+            for name in required:
                 if f'lib/{abi}/{name}' not in libraries:
                     raise ValueError('Missing Flutter engine or application for a requested ABI')
         for name in libraries:
@@ -33,5 +34,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('apk', type=Path)
     parser.add_argument('--abi', action='append', required=True)
+    parser.add_argument('--debug', action='store_true', help='JIT debug APK does not contain libapp.so')
     args = parser.parse_args()
-    print(f'Actual APK native ABI and ZIP CRC: PASS ({verify(args.apk, set(args.abi))} libraries)')
+    print(f'Actual APK native ABI and ZIP CRC: PASS ({verify(args.apk, set(args.abi), debug=args.debug)} libraries)')

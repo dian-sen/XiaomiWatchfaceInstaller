@@ -62,6 +62,7 @@ test_targets=(
 flutter analyze --no-pub "${analysis_targets[@]}"
 flutter test --no-pub --reporter expanded --concurrency=2 "${test_targets[@]}"
 python3 -m unittest discover -s test/features/resources/services -p 'adb_watchface_export_test.py'
+python3 -m unittest discover -s test/tool -p 'verify_apk_abi_test.py'
 
 if "$verify_android"; then
   xms_revision=$(git -C android/xms-wearable-lib-cleanroom rev-parse HEAD)
@@ -70,7 +71,7 @@ if "$verify_android"; then
   }
   python3 tool/verify_native.py
   flutter build apk --debug --no-pub --target-platform android-arm64
-  python3 tool/verify_apk_abi.py build/app/outputs/flutter-apk/app-debug.apk --abi arm64-v8a
+  python3 tool/verify_apk_abi.py build/app/outputs/flutter-apk/app-debug.apk --abi arm64-v8a --debug
   (
     cd android
     ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest :app:lintDebug :xms-wearable-lib:testDebugUnitTest :xms-wearable-lib:lintDebug --stacktrace
