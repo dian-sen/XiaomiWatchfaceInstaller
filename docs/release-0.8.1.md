@@ -25,10 +25,14 @@
 
 ## 验证
 
-- 本地正式验证入口：33 个目标静态分析无问题，157 项 Flutter 测试、8 项 ADB Python 测试及3 项 APK ABI Python 测试通过。
-- 最后补充安装文件名回退、清理锁并发、缓存精确过滤和固件分页区域回归：21 项定向测试通过。所有新测试已加入正式 CI。
-- 原生缓存窄编译及72 项 JVM 回归通过；本机 AIDL 使用签名桩，正式 Android 构建、AIDL、Lint 与签名由 GitHub Actions 验证。
+- 最终产品提交：`ed5715c4b7ffd245a21acb1daf7952b257090c7e`；[Actions 43923588729](https://github.com/dian-sen/XiaomiWatchfaceInstaller/actions/runs/43923588729) 的 verify / release 均 success。
+- 云端34 个静态分析目标、160 项 Flutter 测试、8 项 ADB Python 测试及3 项 APK ABI Python 测试通过。
+- 原生窄编译及72 项 JVM 回归、真实 AIDL 生成、Debug APK、app / XMS 单元测试与 Lint 均通过。
+- Release APK 编译、签名、版本与实际 ABI 校验、自动发布均通过。产物：[build-25-ed5715c](https://github.com/dian-sen/XiaomiWatchfaceInstaller/releases/tag/build-25-ed5715c)。
+- 下载后独立验收：58,007,190 字节，包名 `dev.xiaom.watchfaceinstaller`，版本 `0.8.1+14`，minSdk26 / targetSdk36，非 debuggable，禁止系统备份；ZIP CRC / ELF 检查通过，仅 ARM64 共13 个原生库。
+- APK SHA-256：`db5f2dcc2c0ae3f4eac9baa3bca674d4dfca518ba3ff954cc9ebc7ccac2da220`，与发布资产 digest 一致。Google apksig9.0.1 独立 v2 验签通过；证书 `d96417b1091218fcb8b5b946ea988597ea3853fb2428ab92f43c5698fe710ff9`，与旧版相同。
 - `actionlint`、Bash 语法与 `git diff --check` 通过。
-- 在线只读核验确认 GitHub 源能返回完整包、增量包、文件长度和 digest 字段。未读取用户实际私有文件、执行清理、安装 APK、连接穿戴设备或刷写固件。
+- 在线只读核验确认 GitHub 源能返回完整包、增量包、长度和 digest；另下载139,604 字节完整包样本，SHA-256 与源一致。
+- 未读取用户实际私有文件、执行清理、安装或启动真机应用、连接穿戴设备或刷写表盘/固件；以上自动验证不能替代真机兼容性测试。
 
 版本号、Android versionCode、工作流产物校验、BUILD-INFO 和发布说明已同步为 `0.8.1+14`。沿用此前发布签名身份。
